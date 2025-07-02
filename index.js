@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+const TOKEN = '8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA';
+const CHAT_ID = '6337160812';
 const express = require('express');
 const puppeteer = require('puppeteer');
 const app = express();
