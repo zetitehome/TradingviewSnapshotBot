@@ -8,7 +8,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA"
 
 def snapshot(mesg):
     cmd = [x if i == 0 else x.upper() for i, x in enumerate(mesg)] if len(
