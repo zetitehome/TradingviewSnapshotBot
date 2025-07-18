@@ -1,16 +1,20 @@
 {
   "name": "tradingview-snapshot-bot",
-  "version": "1.0.0",
-  "description": "Tradingview SnapShot Bot",
+  "version": "1.1.0",
+  "description": "TradingView Snapshot Telegram Bot with Signals + TV Alerts",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
-  "author": "Shabbir Hasan",
+  "author": "zetitehome",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.17.1",
-    "puppeteer": "^22.0.0"
+    "express": "^4.18.2",
+    "body-parser": "^1.20.2",
+    "puppeteer": "^22.6.0",
+    "form-data": "^4.0.0"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }
