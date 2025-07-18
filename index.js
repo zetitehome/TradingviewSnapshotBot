@@ -20,8 +20,8 @@ const fetch      = global.fetch;                // Node 18+ global
 // ────────────────────────────────────────────────────────────
 const app              = express();
 const PORT             = process.env.PORT || 10000;
-const BOT_TOKEN        = process.env.BOT_TOKEN || "";
-const ALERT_CHAT_ID    = process.env.ALERT_CHAT_ID || ""; // your own Telegram chat for TV auto alerts
+const BOT_TOKEN        = process.env.BOT_TOKEN || "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
+const ALERT_CHAT_ID    = process.env.ALERT_CHAT_ID || "6337160812"; // your own Telegram chat for TV auto alerts
 const DEFAULT_EXCHANGE = process.env.DEFAULT_EXCHANGE || "FX";
 const DEFAULT_TICKER   = process.env.DEFAULT_TICKER   || "EURUSD";
 const DEFAULT_THEME    = "dark";

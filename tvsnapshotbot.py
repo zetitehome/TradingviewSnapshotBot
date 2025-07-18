@@ -1,10 +1,10 @@
 #!/usr/bin/python
 
 import logging
-from telegram.ext import Updater, Filters, CommandHandler, MessageHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import requests
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',  # take time,level,name
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -38,14 +38,13 @@ def snapshotlist(mesg):
             snapshotsurl.append(f'https://www.tradingview.com/x/{requests.get(requesturl).text}')
         return snapshotsurl
 
-
-def start(update, context):
-    name = update.message.from_user.first_name  # first name of the user messaging
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.from_user.first_name
     reply = "Hi!! {}".format(name)
-    context.bot.send_message(chat_id=update.effective_chat.id,
+    await context.bot.send_message(chat_id=update.effective_chat.id,
                              text=f'{reply} \n\nI\'m a TVSnapShot Bot 🤖, I can generate Tradingview Chart Snapshot 📊 of your choice.\n\nPlease type /help❓to know request commands. \n\nThank You. 👍')
 
-def help(update, context):
+async def help(update, context: ContextTypes.DEFAULT_TYPE):
     reply = """❗️⚠️ Please type /snap or /snaplist first to initate command reception.
 
 You can send the following parameters with a space in between to generate the snapshot URL. 🚀
@@ -74,73 +73,21 @@ Example-2: 👉 To generate a snapshot of all Tickers/Symbols trading at BINANCE
 - With Default chart layout: /snaplist - binance ethusdt btcusdt dogeusdt xrpusdt yfiiusdt bnbusdt 1d dark
 - With your chart layout: /snaplist aSdfzXcV binance ethusdt btcusdt dogeusdt xrpusdt yfiiusdt bnbusdt 1d light"""
 
-    context.bot.send_message(chat_id=update.effective_chat.id,
+    await context.bot.send_message(chat_id=update.effective_chat.id,
                              text=reply)
 
-
-def snap(update, context):
+async def snap(update, context: ContextTypes.DEFAULT_TYPE):
     reply = snapshot(context.args)
     if 'tradingview.com/x/' in reply:
-        context.bot.send_message(
+        await context.bot.send_message(
             chat_id=update.effective_chat.id, text=f'🥳 Hooray 🥳 - The Requested SnapShot Is Generated: ✔️ 👇 : {reply}')
     else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
 
-def snaplist(update, context):
+async def snaplist(update, context: ContextTypes.DEFAULT_TYPE):
     reply = snapshotlist(context.args)
     if isinstance(reply, list):
         for snapurl in reply:
             if 'tradingview.com/x/' in snapurl:
-                context.bot.send_message(
-                    chat_id=update.effective_chat.id, text=f'🥳 Hooray 🥳 - The Requested SnapShots Are Generated: ✔️ 👇 : {snapurl}')
-    else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
-
-
-def echo_text(update, context):
-    reply = update.message.text
-    context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
-
-
-def sticker(update, context):
-    reply = update.message.sticker.file_id
-    context.bot.send_sticker(chat_id=update.effective_chat.id, sticker=reply)
-
-
-def unknown(update, context):
-    context.bot.send_message(chat_id=update.effective_chat.id,
-                             text="❌ Sorry, I didn't understand that command. \n\nPlease type /help ❓ for more details. \n\nThank You. ✅")
-
-def error(update, context):
-    logger.error("Shit!! Update {} caused error {}".format(
-        update, update.error))
-
-
-def main():
-    startbrowser = requests.get('http://localhost:3000/start-browser')
-    response = startbrowser.text
-    print(response)
-    
-    updater = Updater(token=TOKEN, use_context=True)  # take the updates
-    dp = updater.dispatcher  # handle the updates
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help))
-    dp.add_handler(CommandHandler("snap", snap))
-    dp.add_handler(CommandHandler("snaplist", snaplist))
-    # if the user sends text
-    dp.add_handler(MessageHandler(
-        Filters.text & (~Filters.command), echo_text))
-    # if the user sends sticker
-    dp.add_handler(MessageHandler(
-        Filters.sticker & (~Filters.command), sticker))
-    dp.add_handler(MessageHandler(Filters.command, unknown))
-    dp.add_error_handler(error)
-
-    updater.start_polling()
-    logger.info("Started...")
-    updater.idle()
-
-
-if __name__ == "__main__":
-    main()
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id, text=f'🥳 Hooray 🥳 - The Requested SnapShot Is Generated: ✔️ 👇 : {snapurl}')
