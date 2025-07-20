@@ -91,3 +91,33 @@ async def snaplist(update, context: ContextTypes.DEFAULT_TYPE):
             if 'tradingview.com/x/' in snapurl:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id, text=f'🥳 Hooray 🥳 - The Requested SnapShot Is Generated: ✔️ 👇 : {snapurl}')
+                
+                # ...existing code...
+
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help))
+    app.add_handler(CommandHandler("snap", snap))
+    app.add_handler(CommandHandler("snaplist", snaplist))
+
+    async def echo_text(update, context: ContextTypes.DEFAULT_TYPE):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=update.message.text)
+
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo_text))
+
+    async def sticker(update, context: ContextTypes.DEFAULT_TYPE):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="👍 Nice sticker!")
+
+    app.add_handler(MessageHandler(filters.Sticker.ALL & (~filters.COMMAND), sticker))
+
+    async def unknown(update, context: ContextTypes.DEFAULT_TYPE):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Sorry, I didn't understand that command.")
+
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    logger.info("Started...")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
