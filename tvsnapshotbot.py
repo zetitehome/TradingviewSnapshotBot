@@ -3,12 +3,24 @@
 import logging
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import requests
+import nest_asyncio
+import os
+nest_asyncio.apply()
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA"
+# --- Optional: Load .env file for local development ---
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set")
 
 def snapshot(mesg):
     cmd = [x if i == 0 else x.upper() for i, x in enumerate(mesg)] if len(
@@ -16,11 +28,10 @@ def snapshot(mesg):
     if isinstance(cmd, str):
         return cmd
     else:
-        ChartID = f'chart/{cmd[0]}/' if len(cmd[0]
-                                            ) == 8 and not cmd[0].islower() and not cmd[0].isupper() else 'chart/'
-        theme = 'light' if len(cmd) == 4 else 'dark' if len(
-            cmd) == 5 and cmd[4].lower() == 'dark' else 'light'
-        requesturl =  f'http://localhost:3000/run?base={ChartID}&exchange={cmd[1]}&ticker={cmd[2]}&interval={cmd[3]}&theme={theme}'
+        ChartID = f'chart/{cmd[0]}/' if len(cmd[0]) == 8 and not cmd[0].islower() and not cmd[0].isupper() else 'chart/'
+        theme = 'light' if len(cmd) == 4 else 'dark' if len(cmd) == 5 and cmd[4].lower() == 'dark' else 'light'
+        # Use port 10000 to match your Node.js server
+        requesturl =  f'http://localhost:10000/run?base={ChartID}&exchange={cmd[1]}&ticker={cmd[2]}&interval={cmd[3]}&theme={theme}'
         return f'https://www.tradingview.com/x/{requests.get(requesturl).text}'
 
 def snapshotlist(mesg):
@@ -30,11 +41,11 @@ def snapshotlist(mesg):
     if isinstance(cmd, str):
         return cmd
     else:
-        ChartID = f'chart/{cmd[0]}/' if len(cmd[0]
-                                            ) == 8 and not cmd[0].islower() and not cmd[0].isupper() else 'chart/'
+        ChartID = f'chart/{cmd[0]}/' if len(cmd[0]) == 8 and not cmd[0].islower() and not cmd[0].isupper() else 'chart/'
         tickers = cmd[2:-2]
         for symbol in tickers:
-            requesturl =  f'http://localhost:3000/run?base={ChartID}&exchange={cmd[1]}&ticker={symbol}&interval={cmd[-2]}&theme={cmd[-1].lower()}'
+            # Use port 10000 to match your Node.js server
+            requesturl =  f'http://localhost:10000/run?base={ChartID}&exchange={cmd[1]}&ticker={symbol}&interval={cmd[-2]}&theme={cmd[-1].lower()}'
             snapshotsurl.append(f'https://www.tradingview.com/x/{requests.get(requesturl).text}')
         return snapshotsurl
 
@@ -59,7 +70,7 @@ You can send the following parameters with a space in between to generate the sn
 4️⃣ Interval / Timeframe = Type the chart Timeframe / Interval such as '1D' for 1 Day, '1W' for 1 Week Etc...
 
 - Interval Cheat Codes = Accepted Intervals are [1, 3, 5, 15, 30, 45, 1H, 2H, 3H, 4H, 1D, 1W, 1M]
-- (Note: NUmber without letters are in minutes, for example '1' means 1 Minute Timeframe / Interval)
+- (Note: Number without letters are in minutes, for example '1' means 1 Minute Timeframe / Interval)
 
 5️⃣ Theme = light / dark (Note: if left empty then light theme will be used by default)
 
@@ -85,14 +96,13 @@ async def snap(update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=reply)
 
 async def snaplist(update, context: ContextTypes.DEFAULT_TYPE):
-    reply = snapshotlist(context.args)
-    if isinstance(reply, list):
-        for snapurl in reply:
-            if 'tradingview.com/x/' in snapurl:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id, text=f'🥳 Hooray 🥳 - The Requested SnapShot Is Generated: ✔️ 👇 : {snapurl}')
-                
-                # ...existing code...
+    snapurls = snapshotlist(context.args)
+    if isinstance(snapurls, str):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=snapurls)
+    else:
+        for snapurl in snapurls:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=f'🥳 Hooray 🥳 - The Requested SnapShot Is Generated: ✔️ 👇 : {snapurl}')  
 
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -120,4 +130,6 @@ async def main():
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+    

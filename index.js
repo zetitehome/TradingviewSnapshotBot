@@ -96,7 +96,8 @@ async function captureTradingView({ exchange, ticker, interval, theme }) {
   const url = buildTradingViewUrl({ exchange, ticker, interval, theme });
   console.log('📸 Navigating to:', url);
   await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
-  await page.waitForTimeout(5000); // chart load settle
+  // Use setTimeout for compatibility instead of page.waitForTimeout
+  await new Promise(resolve => setTimeout(resolve, 5000)); // chart load settle
   const screenshot = await page.screenshot({ type: 'png' });
   return { screenshot, url };
 }
