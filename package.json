@@ -4,7 +4,8 @@
   "description": "TradingView Snapshot Telegram Bot with Signals + TV Alerts",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "author": "zetitehome",
   "license": "ISC",
@@ -14,7 +15,11 @@
     "form-data": "^4.0.4",
     "puppeteer": "^22.15.0"
   },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
   "engines": {
-    "node": "22.x"
+    "node": ">=20.0.0"
   }
 }
+  
