@@ -208,3 +208,9 @@ telegram.error.InvalidToken: The token `8009536179:NEW_TOKEN_FROM_BOTFATHER` was
 2025-07-21 09:24:14,386 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
 2025-07-21 09:24:14,396 | INFO | telegram.ext.Application | Application is stopping. This might take a moment.
 2025-07-21 09:24:14,407 | INFO | telegram.ext.Application | Application.stop() complete
+2025-07-21 09:35:50,597 | INFO | TVSnapBot | Flask TV webhook listening on port 8081
+2025-07-21 09:35:51,076 | INFO | werkzeug | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8081
+ * Running on http://192.168.1.154:8081
+2025-07-21 09:35:51,077 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
