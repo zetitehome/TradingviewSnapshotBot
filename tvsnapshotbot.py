@@ -5,12 +5,12 @@ TradingView Snapshot Telegram Bot - Webhook + Multi Snapshot Edition
 Features:
 • Default exchange = QUOTEX (switchable via env var).
 • Screenshot backend: Node/Puppeteer (/run, /start-browser) on Render or local.
-• /snap, /snapmulti, /snapall, /pairs, /start, /help bot commands.
-• Rate limiting: per-chat + global throttle.
+• /snap, /snapmulti, /snapall, /pairs, /start, /help, /tokencheck bot commands.
+• Rate limiting: per-chat + global throttle to protect Render.
 • Retry screenshot fetch (3 tries, 5s backoff).
-• Rotating log file: logs/tvsnapshotbot.log
-• TradingView webhook server (/tv, /webhook) -> Telegram message + chart.
-• Webhook sends to Telegram via direct HTTP (thread-safe).
+• Telegram send retry (3 tries, exponential backoff).
+• Rotating logs: logs/tvsnapshotbot.log (bot) & logs/signals.log (TradingView alerts).
+• TradingView webhook server (/tv, /webhook) -> Telegram message + chart (async thread).
 """
 
 import os
@@ -18,7 +18,6 @@ import io
 import re
 import time
 import json
-import queue
 import asyncio
 import logging
 import threading
@@ -42,16 +41,24 @@ from telegram.ext import (
 # Logging
 # ─────────────────────────────────────────────────────────
 os.makedirs("logs", exist_ok=True)
-log_handler = RotatingFileHandler(
+
+log_handler_main = RotatingFileHandler(
     "logs/tvsnapshotbot.log", maxBytes=5 * 1024 * 1024, backupCount=3
 )
+log_handler_signals = RotatingFileHandler(
+    "logs/signals.log", maxBytes=5 * 1024 * 1024, backupCount=5
+)
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
-    handlers=[log_handler, logging.StreamHandler()],
+    handlers=[log_handler_main, logging.StreamHandler()],
 )
 logger = logging.getLogger("TVSnapBot")
 
+signals_logger = logging.getLogger("TVSignals")
+signals_logger.setLevel(logging.INFO)
+signals_logger.addHandler(log_handler_signals)
 
 # ─────────────────────────────────────────────────────────
 # Environment / Config
@@ -63,14 +70,13 @@ DEFAULT_EXCHANGE = os.environ.get("DEFAULT_EXCHANGE", "QUOTEX")  # <— switched
 DEFAULT_INTERVAL = os.environ.get("DEFAULT_INTERVAL", "1")
 DEFAULT_THEME    = os.environ.get("DEFAULT_THEME", "dark")
 TV_WEBHOOK_PORT  = int(os.environ.get("TV_WEBHOOK_PORT", "8081"))
-WEBHOOK_SECRET   = os.environ.get("WEBHOOK_SECRET")  # optional shared secret token
+WEBHOOK_SECRET   = os.environ.get("WEBHOOK_SECRET")  # optional shared secret
 
 if TOKEN == "REPLACE_ME":
     raise RuntimeError("Set TELEGRAM_BOT_TOKEN environment variable before running.")
 
 # reuse HTTP session
 _http = requests.Session()
-
 
 # ─────────────────────────────────────────────────────────
 # Rate limiting (per chat + global)
@@ -92,7 +98,7 @@ def rate_limited(chat_id: int) -> bool:
 
 
 def global_throttle_wait():
-    """Block enough so we don't hammer Render too fast."""
+    """Block so we don't hammer Render too fast."""
     global GLOBAL_LAST_SNAPSHOT
     now = time.time()
     gap = now - GLOBAL_LAST_SNAPSHOT
@@ -120,13 +126,11 @@ OTC_PAIRS: List[str] = [
 
 ALL_PAIRS: List[str] = FX_PAIRS + OTC_PAIRS
 
-
 # Canonicalize keys
 def _canon_key(pair: str) -> str:
     s = pair.strip().upper()
     s = s.replace(" ", "").replace("/", "")
     return s
-
 
 # Pair map
 PAIR_MAP: Dict[str, Tuple[str, str]] = {}  # canon -> (exchange, ticker)
@@ -150,7 +154,7 @@ _underlying_otc = {
     "GBP/JPY-OTC": "GBPJPY",
     "AUD/CHF-OTC": "AUDCHF",
     "EUR/CHF-OTC": "EURCHF",
-    "KES/USD-OTC": "USDKES",  # invert underlying
+    "KES/USD-OTC": "USDKES",  # invert underlying if needed
     "MAD/USD-OTC": "USDMAD",
     "USD/BDT-OTC": "USDBDT",
     "USD/MXN-OTC": "USDMXN",
@@ -159,7 +163,6 @@ _underlying_otc = {
 }
 for p, tk in _underlying_otc.items():
     PAIR_MAP[_canon_key(p)] = (DEFAULT_EXCHANGE, tk)
-
 
 # ─────────────────────────────────────────────────────────
 # Interval & theme normalization
@@ -178,18 +181,16 @@ def norm_interval(tf: str) -> str:
         return "D"
     if t in ("w", "1w", "week"):
         return "W"
-    if t in ("m", "1m", "mo", "month"):
+    if t in ("mo", "1mo", "month"):
         return "M"
     if t.isdigit():
         return t
     return DEFAULT_INTERVAL
 
-
 def norm_theme(val: str) -> str:
     if not val:
         return DEFAULT_THEME
     return "light" if val.lower().startswith("l") else "dark"
-
 
 # ─────────────────────────────────────────────────────────
 # Resolve raw symbol -> (exchange, ticker, is_otc)
@@ -209,10 +210,8 @@ def resolve_symbol(raw: str) -> Tuple[str, str, bool]:
         ex, tk = PAIR_MAP[key]
         return ex, tk, "-OTC" in raw.upper()
 
-    # fallback guess: raw uppercase no slash
     tk = re.sub(r"[^A-Z0-9]", "", s)
     return DEFAULT_EXCHANGE, tk, "-OTC" in raw.upper()
-
 
 # ─────────────────────────────────────────────────────────
 # Screenshot backend helpers
@@ -224,7 +223,6 @@ def node_start_browser():
         logger.info("start-browser %s %s", r.status_code, r.text[:100])
     except Exception as e:
         logger.warning("start-browser failed: %s", e)
-
 
 def fetch_snapshot_png_retry(ex: str, tk: str, interval: str, theme: str) -> bytes:
     """
@@ -245,9 +243,45 @@ def fetch_snapshot_png_retry(ex: str, tk: str, interval: str, theme: str) -> byt
         time.sleep(5)
     raise RuntimeError(f"Failed after retries: {last_err}")
 
+# ─────────────────────────────────────────────────────────
+# Telegram send helpers (w/ retry) – used by webhook thread
+# ─────────────────────────────────────────────────────────
+def telegram_api_post(endpoint: str, data=None, files=None, max_retries: int = 3, timeout: int = 60):
+    """
+    Low-level POST to Telegram Bot API with retry/backoff.
+    """
+    url = f"https://api.telegram.org/bot{TOKEN}/{endpoint}"
+    last = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if files:
+                resp = _http.post(url, data=data, files=files, timeout=timeout)
+            else:
+                resp = _http.post(url, json=data, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json()
+            last = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except Exception as e:
+            last = str(e)
+        sleep_for = min(2 ** (attempt - 1), 10)
+        logger.warning("Telegram POST %s attempt %d failed: %s (retry %ss)", endpoint, attempt, last, sleep_for)
+        time.sleep(sleep_for)
+    logger.error("Telegram POST %s failed after retries: %s", endpoint, last)
+    return None
+
+def tg_api_send_message(chat_id: str, text: str, parse_mode: Optional[str] = None):
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    return telegram_api_post("sendMessage", data=payload)
+
+def tg_api_send_photo_bytes(chat_id: str, png: bytes, caption: str = ""):
+    files = {"photo": ("chart.png", png, "image/png")}
+    data = {"chat_id": chat_id, "caption": caption}
+    return telegram_api_post("sendPhoto", data=data, files=files)
 
 # ─────────────────────────────────────────────────────────
-# Telegram send helpers (async for bot handlers)
+# Telegram send helpers (async for bot commands)
 # ─────────────────────────────────────────────────────────
 async def send_snapshot_photo(
     chat_id: int,
@@ -263,7 +297,6 @@ async def send_snapshot_photo(
         return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-    # launch browser in background (non-blocking)
     await asyncio.to_thread(node_start_browser)
 
     try:
@@ -274,8 +307,6 @@ async def send_snapshot_photo(
         logger.exception("snapshot photo error")
         await context.bot.send_message(chat_id=chat_id, text=f"❌ Failed: {exchange}:{ticker} ({e})")
 
-
-# Build media items in threadpool for /snapmulti, /snapall
 def build_media_items_sync(
     pairs: List[Tuple[str, str, str]],
     interval: str,
@@ -294,32 +325,26 @@ def build_media_items_sync(
             logger.warning("Failed building media for %s:%s -> %s", ex, tk, e)
     return out
 
-
 async def send_media_group_chunked(
     chat_id: int,
     context: ContextTypes.DEFAULT_TYPE,
     media_items: List[InputMediaPhoto],
     chunk_size: int = 5,
 ):
-    # chunk & send
     for i in range(0, len(media_items), chunk_size):
         chunk = media_items[i:i+chunk_size]
         if not chunk:
             continue
-        # only first gets caption
         if len(chunk) > 1:
-            first_cap = chunk[0].caption
             for m in chunk[1:]:
                 m.caption = None
         await context.bot.send_media_group(chat_id=chat_id, media=chunk)
         await asyncio.sleep(1.0)
 
-
 # ─────────────────────────────────────────────────────────
 # Command argument parsing
 # ─────────────────────────────────────────────────────────
 def parse_snap_args(args: List[str]) -> Tuple[str, str, str, str]:
-    # /snap SYMBOL [interval] [theme]
     symbol = args[0] if args else "EUR/USD"
     tf = DEFAULT_INTERVAL
     th = DEFAULT_THEME
@@ -332,9 +357,7 @@ def parse_snap_args(args: List[str]) -> Tuple[str, str, str, str]:
     ex, tk, _ = resolve_symbol(symbol)
     return ex, tk, norm_interval(tf), norm_theme(th)
 
-
 def parse_multi_args(args: List[str]) -> Tuple[List[str], str, str]:
-    # /snapmulti S1 S2 ... [interval] [theme]
     if not args:
         return [], DEFAULT_INTERVAL, DEFAULT_THEME
     theme = DEFAULT_THEME
@@ -346,7 +369,6 @@ def parse_multi_args(args: List[str]) -> Tuple[List[str], str, str]:
         tf = args[-1]
         args = args[:-1]
     return args, norm_interval(tf), norm_theme(theme)
-
 
 # ─────────────────────────────────────────────────────────
 # Bot command handlers
@@ -361,10 +383,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/snapmulti EUR/USD GBP/USD 15 light\n"
         "/snapall\n"
         "/pairs\n\n"
-        "TradingView alerts can hit me at /tv.\n"
+        "TradingView alerts can POST JSON to /tv.\n"
     )
     await context.bot.send_message(update.effective_chat.id, msg)
-
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -372,92 +393,77 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/snap SYMBOL [interval] [theme]\n"
         "/snapmulti S1 S2 ... [interval] [theme]\n"
         "/snapall (FX+OTC chunked)\n"
-        "/pairs list supported pairs\n\n"
+        "/pairs list supported pairs\n"
+        "/tokencheck verify bot token\n\n"
         "Intervals: number=minutes, D=day, W=week.\n"
         "Themes: dark|light.\n"
     )
     await context.bot.send_message(update.effective_chat.id, msg, parse_mode="Markdown")
-
 
 async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["📊 FX Pairs:"] + [f"• {p}" for p in FX_PAIRS]
     lines += ["", "🕒 OTC Pairs:"] + [f"• {p}" for p in OTC_PAIRS]
     await context.bot.send_message(update.effective_chat.id, "\n".join(lines))
 
-
 async def cmd_snap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ex, tk, tf, th = parse_snap_args(context.args)
     await send_snapshot_photo(update.effective_chat.id, context, ex, tk, tf, th)
-
 
 async def cmd_snapmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pairs, tf, th = parse_multi_args(context.args)
     if not pairs:
         await context.bot.send_message(update.effective_chat.id, "Usage: /snapmulti SYM1 SYM2 ... [interval] [theme]")
         return
-
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, f"📸 Capturing {len(pairs)} charts…")
-
-    # build list of (ex,tk,label)
     p_trip: List[Tuple[str, str, str]] = []
     for p in pairs:
         ex, tk, _ = resolve_symbol(p)
         p_trip.append((ex, tk, p))
-
     media_items = await asyncio.to_thread(build_media_items_sync, p_trip, tf, th, prefix="[MULTI] ")
     await send_media_group_chunked(chat_id, context, media_items, chunk_size=5)
-
 
 async def cmd_snapall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, f"⚡ Capturing all {len(ALL_PAIRS)} pairs… this may take a while.")
-
     p_trip: List[Tuple[str, str, str]] = []
     for p in ALL_PAIRS:
         ex, tk, _ = resolve_symbol(p)
         p_trip.append((ex, tk, p))
-
     media_items = await asyncio.to_thread(build_media_items_sync, p_trip, DEFAULT_INTERVAL, DEFAULT_THEME, prefix="[ALL] ")
     await send_media_group_chunked(chat_id, context, media_items, chunk_size=5)
 
+async def cmd_tokencheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # quick /getMe call
+    resp = _http.get(f"https://api.telegram.org/bot{TOKEN}/getMe", timeout=30)
+    if resp.ok:
+        data = resp.json()
+        await context.bot.send_message(update.effective_chat.id, f"✅ Token OK\n{json.dumps(data, indent=2)}")
+    else:
+        await context.bot.send_message(update.effective_chat.id, f"❌ Token test failed: {resp.status_code} {resp.text}")
 
 # Echo fallback text
 async def echo_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(update.effective_chat.id, f"You said: {update.message.text}\nTry /help.")
 
-
 # Unknown command fallback
 async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(update.effective_chat.id, "❌ Unknown command. Try /help.")
-
 
 # ─────────────────────────────────────────────────────────
 # TradingView Webhook Server (Flask) → Telegram
 # ─────────────────────────────────────────────────────────
 flask_app = Flask(__name__)
 
-
-def tg_api_send_message(chat_id: str, text: str, parse_mode: Optional[str] = None):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    try:
-        _http.post(url, json=payload, timeout=30)
-    except Exception as e:
-        logger.error("tg_api_send_message error: %s", e)
-
-
-def tg_api_send_photo_bytes(chat_id: str, png: bytes, caption: str = ""):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-    files = {"photo": ("chart.png", png, "image/png")}
-    data = {"chat_id": chat_id, "caption": caption}
-    try:
-        _http.post(url, data=data, files=files, timeout=60)
-    except Exception as e:
-        logger.error("tg_api_send_photo_bytes error: %s", e)
-
+def normalize_direction(val: str) -> str:
+    if not val:
+        return "CALL"
+    v = val.strip().upper()
+    if v in ("BUY", "LONG", "UP", "CALL", "BULL", "BULLISH"):
+        return "CALL"
+    if v in ("SELL", "SHORT", "DOWN", "PUT", "BEAR", "BEARISH"):
+        return "PUT"
+    return "CALL"  # fallback
 
 def _parse_tv_payload(data: dict) -> Dict[str, str]:
     """
@@ -467,18 +473,62 @@ def _parse_tv_payload(data: dict) -> Dict[str, str]:
     d = {}
     d["chat_id"]   = str(data.get("chat_id") or DEFAULT_CHAT_ID)
     d["pair"]      = str(data.get("pair") or data.get("symbol") or data.get("ticker") or "EURUSD")
-    d["direction"] = str(data.get("direction") or "CALL").upper()
+    d["direction"] = normalize_direction(data.get("direction") or "")
     d["expiry"]    = str(data.get("expiry") or "")
     d["strategy"]  = str(data.get("strategy") or "")
     d["winrate"]   = str(data.get("winrate") or "")
     d["timeframe"] = str(data.get("timeframe") or data.get("tf") or DEFAULT_INTERVAL)
     d["theme"]     = str(data.get("theme") or DEFAULT_THEME)
+    d["price"]     = str(data.get("price") or "")
+    d["time"]      = str(data.get("time") or "")
     return d
 
+def process_tv_alert_async(payload: Dict[str, str]):
+    """
+    Runs in background thread after Flask returns 200.
+    """
+    signals_logger.info("ALERT_IN %s", json.dumps(payload))
+    chat_id   = payload["chat_id"]
+    raw_pair  = payload["pair"]
+    direction = payload["direction"]
+    expiry    = payload["expiry"]
+    strat     = payload["strategy"]
+    winrate   = payload["winrate"]
+    tf        = norm_interval(payload["timeframe"])
+    theme     = norm_theme(payload["theme"])
+    price     = payload.get("price", "")
+    timestr   = payload.get("time", "")
+
+    ex, tk, _ = resolve_symbol(raw_pair)
+
+    # send text first
+    msg = (
+        f"🔔 *TradingView Alert*\n"
+        f"Pair: {raw_pair}\n"
+        f"Direction: {direction}\n"
+        f"Expiry: {expiry}\n"
+        f"Price: {price}\n"
+        f"Strategy: {strat}\n"
+        f"Win Rate: {winrate}\n"
+        f"TF: {tf} • Theme: {theme}\n"
+        f"Time: {timestr}"
+    )
+    tg_api_send_message(chat_id, msg, parse_mode="Markdown")
+
+    # try screenshot
+    try:
+        node_start_browser()
+        png = fetch_snapshot_png_retry(ex, tk, tf, theme)
+        tg_api_send_photo_bytes(chat_id, png, caption=f"{ex}:{tk} • TF {tf} • {theme}")
+        signals_logger.info("ALERT_OK %s", raw_pair)
+    except Exception as e:
+        logger.error("TV snapshot error: %s", e)
+        tg_api_send_message(chat_id, f"⚠ Chart snapshot failed for {raw_pair}: {e}")
+        signals_logger.error("ALERT_FAIL %s %s", raw_pair, e)
 
 def _handle_tv_alert(data: dict):
     """
-    Process a TradingView alert payload synchronously (Flask thread).
+    Process TradingView alert quickly: validate, normalize, queue thread.
     """
     if WEBHOOK_SECRET:
         hdr = request.headers.get("X-Webhook-Token", "")
@@ -489,40 +539,9 @@ def _handle_tv_alert(data: dict):
     payload = _parse_tv_payload(data)
     logger.info("TV payload normalized: %s", payload)
 
-    chat_id   = payload["chat_id"]
-    raw_pair  = payload["pair"]
-    direction = payload["direction"]
-    expiry    = payload["expiry"]
-    strat     = payload["strategy"]
-    winrate   = payload["winrate"]
-    tf        = norm_interval(payload["timeframe"])
-    theme     = norm_theme(payload["theme"])
-
-    ex, tk, _ = resolve_symbol(raw_pair)
-
-    # send text first
-    msg = (
-        f"🔔 *TradingView Alert*\n"
-        f"Pair: {raw_pair}\n"
-        f"Direction: {direction}\n"
-        f"Expiry: {expiry}\n"
-        f"Strategy: {strat}\n"
-        f"Win Rate: {winrate}\n"
-        f"TF: {tf} • Theme: {theme}"
-    )
-    tg_api_send_message(chat_id, msg, parse_mode="Markdown")
-
-    # try screenshot
-    try:
-        node_start_browser()
-        png = fetch_snapshot_png_retry(ex, tk, tf, theme)
-        tg_api_send_photo_bytes(chat_id, png, caption=f"{ex}:{tk} • TF {tf} • {theme}")
-    except Exception as e:
-        logger.error("TV snapshot error: %s", e)
-        tg_api_send_message(chat_id, f"⚠ Chart snapshot failed for {raw_pair}: {e}")
-
+    # Spawn worker thread so TV gets fast 200
+    threading.Thread(target=process_tv_alert_async, args=(payload,), daemon=True).start()
     return {"ok": True}, 200
-
 
 @flask_app.route("/tv", methods=["POST"])
 def tv_route():
@@ -534,10 +553,9 @@ def tv_route():
     body, code = _handle_tv_alert(data)
     return jsonify(body), code
 
-
 @flask_app.route("/webhook", methods=["POST"])
 def webhook_route():
-    # alias
+    # alias to /tv
     try:
         data = request.get_json(force=True)
     except Exception as e:
@@ -545,7 +563,6 @@ def webhook_route():
         return jsonify({"ok": False, "error": "invalid_json"}), 400
     body, code = _handle_tv_alert(data)
     return jsonify(body), code
-
 
 def start_flask_background():
     """
@@ -563,7 +580,6 @@ def start_flask_background():
     ).start()
     logger.info("Flask TV webhook listening on port %s", TV_WEBHOOK_PORT)
 
-
 # ─────────────────────────────────────────────────────────
 # Main (non-async) — avoids nested event loop crash
 # ─────────────────────────────────────────────────────────
@@ -579,6 +595,7 @@ def main():
     application.add_handler(CommandHandler("snap",      cmd_snap))
     application.add_handler(CommandHandler("snapmulti", cmd_snapmulti))
     application.add_handler(CommandHandler("snapall",   cmd_snapall))
+    application.add_handler(CommandHandler("tokencheck", cmd_tokencheck))
 
     # Fallbacks
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo_text))
@@ -587,7 +604,6 @@ def main():
     logger.info("Bot polling… (Quotex default)  |  Webhook on port %s", TV_WEBHOOK_PORT)
     # NOTE: This call blocks and manages its own event loop. Do NOT wrap in asyncio.run().
     application.run_polling()
-
 
 if __name__ == "__main__":
     main()
