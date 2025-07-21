@@ -357,58 +357,66 @@ def tg_api_send_photo_bytes(chat_id: str, png: bytes, caption: str=""):
     except Exception as e:
         logger.error("tg_api_send_photo_bytes: %s", e)
 
+# --- replace old _handle_tv_alert & /tv route with this ---
+
 def _handle_tv_alert(data: dict):
-    # optional shared secret
+    """
+    Process a TradingView alert payload synchronously (Flask thread).
+    Accept both header-based and body-based secrets.
+    """
+    # Security: header OR body secret allowed (TradingView can't send custom headers)
     if WEBHOOK_SECRET:
         hdr = request.headers.get("X-Webhook-Token", "")
-        if hdr != WEBHOOK_SECRET:
-            logger.warning("Webhook secret mismatch")
-            return {"ok": False, "error":"unauthorized"}, 403
+        body_secret = str(data.get("secret") or data.get("token") or "")
+        if hdr != WEBHOOK_SECRET and body_secret != WEBHOOK_SECRET:
+            logger.warning("Webhook secret mismatch; rejecting.")
+            return {"ok": False, "error": "unauthorized"}, 403
 
-    p = _parse_tv_payload(data)
-    logger.info("TV payload: %s", p)
+    payload = _parse_tv_payload(data)
+    logger.info("TV payload normalized: %s", payload)
 
-    chat_id   = p["chat_id"]
-    raw_pair  = p["pair"]
-    direction = p["direction"]
-    expiry    = p["expiry"]
-    strat     = p["strategy"]
-    winrate   = p["winrate"]
-    tf        = norm_interval(p["timeframe"])
-    theme     = norm_theme(p["theme"])
+    chat_id   = payload["chat_id"]
+    raw_pair  = payload["pair"]
+    direction = payload["direction"]
+    expiry    = payload["expiry"] or f"{data.get('default_expiry_min','') }m"
+    strat     = payload["strategy"]
+    winrate   = payload["winrate"]
+    tf        = norm_interval(payload["timeframe"])
+    theme     = norm_theme(payload["theme"])
 
     ex, tk, _ = resolve_symbol(raw_pair)
 
-    # text
+    # Inform chat
     msg = (
         f"🔔 *TradingView Alert*\n"
         f"Pair: {raw_pair}\n"
         f"Direction: {direction}\n"
-        f"Expiry (min): {expiry}\n"
+        f"Expiry: {expiry}\n"
         f"Strategy: {strat}\n"
         f"Win Rate: {winrate}\n"
         f"TF: {tf} • Theme: {theme}"
     )
     tg_api_send_message(chat_id, msg, parse_mode="Markdown")
 
-    # screenshot
+    # Attempt chart
     try:
         node_start_browser()
         png = fetch_snapshot_png_retry(ex, tk, tf, theme)
         tg_api_send_photo_bytes(chat_id, png, caption=f"{ex}:{tk} • TF {tf} • {theme}")
     except Exception as e:
-        logger.error("TV snapshot error: %s", e)
+        logger.error("TV snapshot error for %s:%s -> %s", ex, tk, e)
         tg_api_send_message(chat_id, f"⚠ Chart snapshot failed for {raw_pair}: {e}")
 
     return {"ok": True}, 200
 
-@flask_app.route("/tv", methods=["POST"])
+
+@flask_app.post("/tv")
 def tv_route():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=False)
     except Exception as e:
-        logger.error("/tv JSON parse error: %s", e)
-        return jsonify({"ok": False, "error":"invalid_json"}), 400
+        logger.error("TV /tv invalid JSON: %s", e)
+        return jsonify({"ok": False, "error": "invalid_json"}), 400
     body, code = _handle_tv_alert(data)
     return jsonify(body), code
 
