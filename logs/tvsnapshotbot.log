@@ -137,3 +137,13 @@ Traceback (most recent call last):
   File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 847, in initialize
     raise InvalidToken(f"The token `{self._token}` was rejected by the server.") from exc
 telegram.error.InvalidToken: The token `8009536179:NEW_TOKEN_FROM_BOTFATHER` was rejected by the server.
+2025-07-21 09:14:10,974 | INFO | TVSnapBot | Flask TV webhook listening on port 8081
+2025-07-21 09:14:11,205 | INFO | werkzeug | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8081
+ * Running on http://192.168.1.154:8081
+2025-07-21 09:14:11,208 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
+2025-07-21 09:14:21,685 | INFO | TVSnapBot | Bot polling… (Quotex default)  |  Webhook on port 8081
+2025-07-21 09:14:25,105 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getMe "HTTP/1.1 200 OK"
+2025-07-21 09:14:25,194 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/deleteWebhook "HTTP/1.1 200 OK"
+2025-07-21 09:14:25,200 | INFO | telegram.ext.Application | Application started
