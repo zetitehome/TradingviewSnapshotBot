@@ -7,7 +7,7 @@ Features
 --------
 • QUOTEX default exchange (override via env)
 • Node/Puppeteer screenshot backend (/run) hosted on Render or ngrok
-• Multi‑exchange fallback: try primary, then EXCHANGE_FALLBACKS env list
+• Multi-exchange fallback: primary + derived + env list + known FX feeds (FX, OANDA, FX_IDC…)
 • /snap, /snapmulti, /snapall, /pairs, /trade, /next, /help, /start
 • Direction synonyms: CALL/PUT + BUY/SELL + UP/DOWN (mapped)
 • Pocket Option style trade messages with emoji arrows
@@ -71,9 +71,12 @@ DEFAULT_THEME    = os.environ.get("DEFAULT_THEME", "dark")
 TV_WEBHOOK_PORT  = int(os.environ.get("TV_WEBHOOK_PORT", "8081"))
 WEBHOOK_SECRET   = os.environ.get("WEBHOOK_SECRET")  # optional
 
-# Exchange fallback list (after primary)
+# User-configurable fallback list (after primary + derived)
 _env_ex_fallback = os.environ.get("EXCHANGE_FALLBACKS", "FX_IDC,OANDA,FOREXCOM,FXCM,IDC")
 EXCHANGE_FALLBACKS = [x.strip().upper() for x in _env_ex_fallback.split(",") if x.strip()]
+
+# Known good FX feeds on TradingView (order matters)
+KNOWN_FX_EXCHANGES = ["FX", "OANDA", "FX_IDC", "FOREXCOM", "FXCM", "IDC"]
 
 _http = requests.Session()
 
@@ -127,11 +130,17 @@ ALL_PAIRS = FX_PAIRS + OTC_PAIRS
 
 
 def _canon_key(pair: str) -> str:
-    return pair.strip().upper().replace(" ", "").replace("/", "")
+    return (
+        pair.strip()
+        .upper()
+        .replace(" ", "")
+        .replace("/", "")
+        .replace("-", "")  # strip dash so EUR/USD-OTC & EURUSDOTC normalize
+    )
 
 
 PAIR_MAP: Dict[str, Tuple[str, str]] = {}
-# majors map to DEFAULT_EXCHANGE
+# majors map to DEFAULT_EXCHANGE initially (we may override dynamically)
 for p in FX_PAIRS:
     PAIR_MAP[_canon_key(p)] = (DEFAULT_EXCHANGE, p.replace("/", ""))
 
@@ -173,23 +182,55 @@ def norm_theme(val: str) -> str:
 
 
 # ------------------------------------------------------------------
-# Resolve symbol -> (exchange, ticker, is_otc)
-# Accept raw label forms: "EUR/USD", "QUOTEX:EURUSD", "EURUSD", "EUR/USD-OTC"
+# Resolve symbol -> (exchange, ticker, is_otc, alt_exchange_list)
+#
+# This improves over earlier versions by:
+#  * Detecting OTC suffix
+#  * For known FX majors AND when DEFAULT_EXCHANGE looks unsupported (e.g., QUOTEX),
+#    we auto-suggest "FX" as the first fallback candidate.
+#  * Always returns an alt list for use by snapshot fallback.
 # ------------------------------------------------------------------
-def resolve_symbol(raw: str) -> Tuple[str, str, bool]:
+def resolve_symbol(raw: str) -> Tuple[str, str, bool, List[str]]:
     if not raw:
-        return DEFAULT_EXCHANGE, "EURUSD", False
+        return DEFAULT_EXCHANGE, "EURUSD", False, []
+
     s = raw.strip().upper()
     is_otc = "-OTC" in s
-    if ":" in s:
-        ex, tk = s.split(":",1)
-        return ex, tk, is_otc
+
+    if ":" in s:  # explicit EX:TK wins
+        ex, tk = s.split(":", 1)
+        # alt list: env fallback + known fx
+        return ex, tk, is_otc, EXCHANGE_FALLBACKS + KNOWN_FX_EXCHANGES
+
     key = _canon_key(s)
     if key in PAIR_MAP:
         ex, tk = PAIR_MAP[key]
-        return ex, tk, is_otc
-    tk = re.sub(r"[^A-Z0-9]", "", s)
-    return DEFAULT_EXCHANGE, tk, is_otc
+    else:
+        # fallback guess: remove non-alnum -> ticker
+        tk = re.sub(r"[^A-Z0-9]", "", s)
+        ex = DEFAULT_EXCHANGE
+
+    # Auto-upgrade major FX to "FX" primary if default is QUOTEX (or unknown)
+    if not is_otc and DEFAULT_EXCHANGE == "QUOTEX":
+        primary = "FX"
+        derived_fallbacks = [DEFAULT_EXCHANGE]  # still try QUOTEX after FX
+    else:
+        primary = ex
+        derived_fallbacks = []
+
+    # alt list: derived_fallbacks + env list + known fx
+    alt_list = derived_fallbacks + EXCHANGE_FALLBACKS + KNOWN_FX_EXCHANGES
+
+    # dedup preserving order, drop primary
+    seen = set([primary])
+    cleaned = []
+    for x in alt_list:
+        xu = x.upper()
+        if xu not in seen:
+            cleaned.append(xu)
+            seen.add(xu)
+
+    return primary, tk, is_otc, cleaned
 
 
 # ------------------------------------------------------------------
@@ -218,16 +259,38 @@ def _attempt_snapshot_url(ex: str, tk: str, interval: str, theme: str, base: str
         return False, None, str(e)
 
 
-def fetch_snapshot_png_any(primary_ex: str, tk: str, interval: str, theme: str, base: str="chart") -> tuple[bytes, str]:
+def fetch_snapshot_png_any(
+    primary_ex: str,
+    tk: str,
+    interval: str,
+    theme: str,
+    base: str="chart",
+    extra_exchanges: Optional[List[str]]=None,
+) -> tuple[bytes, str]:
     """
-    Multi‑exchange fallback. Try primary first, then EXCHANGE_FALLBACKS.
-    Returns (png_bytes, exchange_used).
+    Multi-exchange fallback. Try primary first, then extra_exchanges (if passed),
+    then env fallbacks, then known fx list. Returns (png_bytes, exchange_used).
     Raises RuntimeError if all fail.
     """
     tried = []
     last_err = None
-    candidates = [primary_ex.upper()] + [e for e in EXCHANGE_FALLBACKS if e.upper() != primary_ex.upper()]
-    for ex in candidates:
+
+    merged = [primary_ex.upper()]
+    if extra_exchanges:
+        merged.extend([x.upper() for x in extra_exchanges])
+    # also include env fallback + known fx
+    for x in EXCHANGE_FALLBACKS + KNOWN_FX_EXCHANGES:
+        merged.append(x.upper())
+
+    # dedup order
+    dedup = []
+    seen = set()
+    for x in merged:
+        if x not in seen:
+            dedup.append(x)
+            seen.add(x)
+
+    for ex in dedup:
         tried.append(ex)
         ok, png, err = _attempt_snapshot_url(ex, tk, interval, theme, base)
         if ok and png:
@@ -236,6 +299,7 @@ def fetch_snapshot_png_any(primary_ex: str, tk: str, interval: str, theme: str, 
         last_err = err
         logger.warning("Snapshot failed %s:%s via %s -> %s", ex, tk, ex, err)
         time.sleep(2)
+
     raise RuntimeError(f"All exchanges failed for {tk}. Last error: {last_err}. Tried: {tried}")
 
 
@@ -250,6 +314,7 @@ async def send_snapshot_photo(
     interval: str,
     theme: str,
     prefix: str="",
+    alt_exchanges: Optional[List[str]]=None,
 ):
     if rate_limited(chat_id):
         await context.bot.send_message(chat_id, "⏳ Too many requests; wait a few seconds…")
@@ -257,7 +322,9 @@ async def send_snapshot_photo(
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
     await asyncio.to_thread(node_start_browser)
     try:
-        png, ex_used = await asyncio.to_thread(fetch_snapshot_png_any, exchange, ticker, interval, theme, "chart")
+        png, ex_used = await asyncio.to_thread(
+            fetch_snapshot_png_any, exchange, ticker, interval, theme, "chart", alt_exchanges
+        )
         caption = f"{prefix}{ex_used}:{ticker} • TF {interval} • {theme}"
         await context.bot.send_photo(chat_id=chat_id, photo=png, caption=caption)
     except Exception as e:
@@ -266,15 +333,15 @@ async def send_snapshot_photo(
 
 
 def build_media_items_sync(
-    pairs: List[Tuple[str,str,str]],
+    pairs: List[Tuple[str,str,str,List[str]]],
     interval: str,
     theme: str,
     prefix: str,
 ) -> List[InputMediaPhoto]:
     out: List[InputMediaPhoto] = []
-    for ex, tk, lab in pairs:
+    for ex, tk, lab, alt_list in pairs:
         try:
-            png, ex_used = fetch_snapshot_png_any(ex, tk, interval, theme, "chart")
+            png, ex_used = fetch_snapshot_png_any(ex, tk, interval, theme, "chart", alt_list)
             bio = io.BytesIO(png); bio.name = "chart.png"
             cap = f"{prefix}{ex_used}:{tk} • {lab} • TF {interval} • {theme}"
             out.append(InputMediaPhoto(media=bio, caption=cap))
@@ -321,7 +388,7 @@ def parse_direction(word: Optional[str]) -> Optional[str]:
 # ------------------------------------------------------------------
 # Command Parsing
 # ------------------------------------------------------------------
-def parse_snap_args(args: List[str]) -> Tuple[str,str,str,str]:
+def parse_snap_args(args: List[str]) -> Tuple[str,str,str,str,List[str]]:
     # /snap SYMBOL [interval] [theme]
     symbol = args[0] if args else "EUR/USD"
     tf = DEFAULT_INTERVAL
@@ -332,8 +399,8 @@ def parse_snap_args(args: List[str]) -> Tuple[str,str,str,str]:
         th = args[-1].lower()
     elif len(args) >= 3 and args[2].lower() in ("dark","light"):
         th = args[2].lower()
-    ex, tk, _ = resolve_symbol(symbol)
-    return ex, tk, norm_interval(tf), norm_theme(th)
+    ex, tk, _is_otc, alt = resolve_symbol(symbol)
+    return ex, tk, norm_interval(tf), norm_theme(th), alt
 
 
 def parse_multi_args(args: List[str]) -> Tuple[List[str],str,str]:
@@ -410,8 +477,8 @@ async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_snap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ex, tk, tf, th = parse_snap_args(context.args)
-    await send_snapshot_photo(update.effective_chat.id, context, ex, tk, tf, th)
+    ex, tk, tf, th, alt = parse_snap_args(context.args)
+    await send_snapshot_photo(update.effective_chat.id, context, ex, tk, tf, th, alt_exchanges=alt)
 
 
 async def cmd_snapmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -421,10 +488,10 @@ async def cmd_snapmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, f"📸 Capturing {len(pairs)} charts…")
-    p_trip: List[Tuple[str,str,str]] = []
+    p_trip: List[Tuple[str,str,str,List[str]]] = []
     for p in pairs:
-        ex, tk, _ = resolve_symbol(p)
-        p_trip.append((ex, tk, p))
+        ex, tk, _is_otc, alt = resolve_symbol(p)
+        p_trip.append((ex, tk, p, alt))
     media_items = await asyncio.to_thread(build_media_items_sync, p_trip, tf, th, prefix="[MULTI] ")
     if not media_items:
         await context.bot.send_message(chat_id, "❌ No charts captured.")
@@ -435,10 +502,10 @@ async def cmd_snapmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_snapall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await context.bot.send_message(chat_id, f"⚡ Capturing all {len(ALL_PAIRS)} pairs… this may take a while.")
-    p_trip: List[Tuple[str,str,str]] = []
+    p_trip: List[Tuple[str,str,str,List[str]]] = []
     for p in ALL_PAIRS:
-        ex, tk, _ = resolve_symbol(p)
-        p_trip.append((ex, tk, p))
+        ex, tk, _is_otc, alt = resolve_symbol(p)
+        p_trip.append((ex, tk, p, alt))
     media_items = await asyncio.to_thread(build_media_items_sync, p_trip, DEFAULT_INTERVAL, DEFAULT_THEME, prefix="[ALL] ")
     if not media_items:
         await context.bot.send_message(chat_id, "❌ No charts captured.")
@@ -449,13 +516,13 @@ async def cmd_snapall(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # /trade SYMBOL CALL|PUT [expiry] [theme]
     symbol, direction, expiry, theme = parse_trade_args(context.args)
-    ex, tk, _ = resolve_symbol(symbol)
-    tf = norm_interval(DEFAULT_INTERVAL)  # we chart bot default timeframe for trade view
+    ex, tk, _is_otc, alt = resolve_symbol(symbol)
+    tf = norm_interval(DEFAULT_INTERVAL)  # chart uses bot default timeframe
     th = norm_theme(theme)
     arrow = "🟢↑" if direction == "CALL" else "🔴↓"
     msg = f"{arrow} *{symbol}* {direction}  Expiry: {expiry}  (Pocket Option)"
     await context.bot.send_message(update.effective_chat.id, msg, parse_mode=ParseMode.MARKDOWN)
-    await send_snapshot_photo(update.effective_chat.id, context, ex, tk, tf, th, prefix="[TRADE] ")
+    await send_snapshot_photo(update.effective_chat.id, context, ex, tk, tf, th, prefix="[TRADE] ", alt_exchanges=alt)
 
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -466,21 +533,22 @@ async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # Echo non-command text (NL trade quick parse)
+_trade_re = re.compile(r"(?i)trade\s+([A-Z/\-]+)\s+(call|put|buy|sell|up|down)\s+([0-9]+m?)")
+
 async def echo_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text.strip()
-    # crude natural language parse: "trade eurusd call 5m"
-    m = re.match(r"(?i)trade\\s+([A-Z/\\-]+)\\s+(call|put|buy|sell|up|down)\\s+([0-9]+m?)", txt)
+    m = _trade_re.match(txt)
     if m:
         symbol, dirw, exp = m.group(1), m.group(2), m.group(3)
         direction = parse_direction(dirw) or "CALL"
-        ex, tk, _ = resolve_symbol(symbol)
+        ex, tk, _is_otc, alt = resolve_symbol(symbol)
         arrow = "🟢↑" if direction == "CALL" else "🔴↓"
         await context.bot.send_message(
             update.effective_chat.id,
             f"{arrow} *{symbol}* {direction} Expiry {exp}",
             parse_mode=ParseMode.MARKDOWN,
         )
-        await send_snapshot_photo(update.effective_chat.id, context, ex, tk, DEFAULT_INTERVAL, DEFAULT_THEME, prefix="[TRADE] ")
+        await send_snapshot_photo(update.effective_chat.id, context, ex, tk, DEFAULT_INTERVAL, DEFAULT_THEME, prefix="[TRADE] ", alt_exchanges=alt)
         return
     await context.bot.send_message(update.effective_chat.id, f"You said: {txt}\nTry /trade EUR/USD CALL 5m")
 
@@ -546,14 +614,14 @@ def _handle_tv_alert(data: dict):
 
     chat_id   = payload["chat_id"]
     raw_pair  = payload["pair"]
-    direction = payload["direction"]
+    direction = parse_direction(payload["direction"]) or "CALL"
     expiry    = payload["expiry"]
     strat     = payload["strategy"]
     winrate   = payload["winrate"]
     tf        = norm_interval(payload["timeframe"])
     theme     = norm_theme(payload["theme"])
 
-    ex, tk, _is_otc = resolve_symbol(raw_pair)
+    ex, tk, _is_otc, alt = resolve_symbol(raw_pair)
 
     arrow = "🟢↑" if direction == "CALL" else "🔴↓"
     msg = (
@@ -570,7 +638,7 @@ def _handle_tv_alert(data: dict):
     # Attempt chart w/ fallback
     try:
         node_start_browser()
-        png, ex_used = fetch_snapshot_png_any(ex, tk, tf, theme, "chart")
+        png, ex_used = fetch_snapshot_png_any(ex, tk, tf, theme, "chart", alt)
         tg_api_send_photo_bytes(chat_id, png, caption=f"{ex_used}:{tk} • TF {tf} • {theme}")
     except Exception as e:
         logger.error("TV snapshot error for %s:%s -> %s", ex, tk, e)
@@ -625,7 +693,7 @@ def main():
     tg_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo_text))
     tg_app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
 
-    logger.info("Bot polling… (Quotex default) | Webhook on port %s", TV_WEBHOOK_PORT)
+    logger.info("Bot polling… (Default=%s) | Webhook port %s", DEFAULT_EXCHANGE, TV_WEBHOOK_PORT)
     tg_app.run_polling()
 
 

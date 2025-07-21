@@ -3157,3 +3157,123 @@ RuntimeError: Failed after retries: HTTP 404: Not Found
 2025-07-21 16:04:29,838 | INFO | telegram.ext.Application | Application started
 2025-07-21 16:04:30,131 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
 2025-07-21 16:04:30,367 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:04:40,234 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:04:50,337 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:05:00,443 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:05:10,546 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:05:20,644 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:05:29,600 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:05:30,009 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendChatAction "HTTP/1.1 200 OK"
+2025-07-21 16:05:30,667 | WARNING | TVSnapBot | Snapshot failed QUOTEX:EURUSD via QUOTEX -> HTTP 404: Not Found
+
+2025-07-21 16:05:32,807 | WARNING | TVSnapBot | Snapshot failed FX_IDC:EURUSD via FX_IDC -> HTTP 404: Not Found
+
+2025-07-21 16:05:34,918 | WARNING | TVSnapBot | Snapshot failed OANDA:EURUSD via OANDA -> HTTP 404: Not Found
+
+2025-07-21 16:05:37,045 | WARNING | TVSnapBot | Snapshot failed FOREXCOM:EURUSD via FOREXCOM -> HTTP 404: Not Found
+
+2025-07-21 16:05:39,167 | WARNING | TVSnapBot | Snapshot failed FXCM:EURUSD via FXCM -> HTTP 404: Not Found
+
+2025-07-21 16:05:39,701 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:05:41,278 | WARNING | TVSnapBot | Snapshot failed IDC:EURUSD via IDC -> HTTP 404: Not Found
+
+2025-07-21 16:05:43,281 | ERROR | TVSnapBot | snapshot photo error
+Traceback (most recent call last):
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\tvsnapshotbot.py", line 260, in send_snapshot_photo
+    png, ex_used = await asyncio.to_thread(fetch_snapshot_png_any, exchange, ticker, interval, theme, "chart")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\asyncio\threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\concurrent\futures\thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\tvsnapshotbot.py", line 239, in fetch_snapshot_png_any
+    raise RuntimeError(f"All exchanges failed for {tk}. Last error: {last_err}. Tried: {tried}")
+RuntimeError: All exchanges failed for EURUSD. Last error: HTTP 404: Not Found
+. Tried: ['QUOTEX', 'FX_IDC', 'OANDA', 'FOREXCOM', 'FXCM', 'IDC']
+2025-07-21 16:05:43,689 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:05:49,950 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:06:00,050 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:06:10,152 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:06:20,249 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:06:30,409 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:06:40,509 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:06:50,612 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:00,710 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:10,808 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:20,907 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:31,003 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:41,098 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:51,051 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:51,504 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:07:54,392 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:07:54,614 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:08:04,496 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:08:10,310 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:08:10,752 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:08:11,039 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendChatAction "HTTP/1.1 200 OK"
+2025-07-21 16:08:11,423 | WARNING | TVSnapBot | Snapshot failed QUOTEX:EURUSD via QUOTEX -> HTTP 404: Not Found
+
+2025-07-21 16:08:13,555 | WARNING | TVSnapBot | Snapshot failed FX_IDC:EURUSD via FX_IDC -> HTTP 404: Not Found
+
+2025-07-21 16:08:15,686 | WARNING | TVSnapBot | Snapshot failed OANDA:EURUSD via OANDA -> HTTP 404: Not Found
+
+2025-07-21 16:08:17,810 | WARNING | TVSnapBot | Snapshot failed FOREXCOM:EURUSD via FOREXCOM -> HTTP 404: Not Found
+
+2025-07-21 16:08:19,925 | WARNING | TVSnapBot | Snapshot failed FXCM:EURUSD via FXCM -> HTTP 404: Not Found
+
+2025-07-21 16:08:20,417 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:08:22,049 | WARNING | TVSnapBot | Snapshot failed IDC:EURUSD via IDC -> HTTP 404: Not Found
+
+2025-07-21 16:08:24,051 | ERROR | TVSnapBot | snapshot photo error
+Traceback (most recent call last):
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\tvsnapshotbot.py", line 260, in send_snapshot_photo
+    png, ex_used = await asyncio.to_thread(fetch_snapshot_png_any, exchange, ticker, interval, theme, "chart")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\asyncio\threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\concurrent\futures\thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\tvsnapshotbot.py", line 239, in fetch_snapshot_png_any
+    raise RuntimeError(f"All exchanges failed for {tk}. Last error: {last_err}. Tried: {tried}")
+RuntimeError: All exchanges failed for EURUSD. Last error: HTTP 404: Not Found
+. Tried: ['QUOTEX', 'FX_IDC', 'OANDA', 'FOREXCOM', 'FXCM', 'IDC']
+2025-07-21 16:08:24,772 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:08:30,533 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:08:40,653 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:08:50,750 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:09:00,992 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:09:11,094 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:09:21,202 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:09:28,383 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:09:28,842 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:09:34,495 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:09:34,977 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/sendMessage "HTTP/1.1 200 OK"
+2025-07-21 16:09:44,755 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:09:54,855 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:10:05,377 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:10:15,478 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:10:25,577 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:10:35,686 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:10:45,786 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:10:56,469 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:11:06,624 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:11:16,909 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:11:27,007 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:11:37,104 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:11:47,218 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:11:57,338 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:12:07,653 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:12:17,751 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:12:27,853 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:12:38,171 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:12:48,279 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:12:58,378 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:13:08,674 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:13:18,790 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:13:28,915 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:13:39,033 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:13:48,902 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 16:13:49,025 | INFO | telegram.ext.Application | Application is stopping. This might take a moment.
+2025-07-21 16:13:49,173 | INFO | telegram.ext.Application | Application.stop() complete
