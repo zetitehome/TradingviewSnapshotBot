@@ -1,3 +1,139 @@
 2025-07-20 23:43:22,918 | INFO | TVSnapBot | Bot started with Quotex feed and multi snapshot support.
 2025-07-20 23:43:51,484 | INFO | TVSnapBot | Bot started with Quotex feed and multi snapshot support.
 2025-07-20 23:45:48,268 | INFO | TVSnapBot | Bot started with Quotex feed and multi snapshot support.
+2025-07-21 09:06:45,405 | INFO | TVSnapBot | Flask TV webhook listening on port 8081
+2025-07-21 09:06:45,582 | INFO | werkzeug | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8081
+ * Running on http://192.168.1.154:8081
+2025-07-21 09:06:45,583 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
+2025-07-21 09:06:47,730 | INFO | TVSnapBot | Bot polling… (Quotex default)  |  Webhook on port 8081
+2025-07-21 09:06:48,612 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getMe "HTTP/1.1 404 Not Found"
+2025-07-21 09:06:48,615 | ERROR | telegram.ext | Network Retry Loop (Bootstrap Initialize Application): Invalid token. Aborting retry loop.
+Traceback (most recent call last):
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 845, in initialize
+    await self.get_me()
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 1981, in get_me
+    return await super().get_me(
+           ^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 976, in get_me
+    result = await self._post(
+             ^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 698, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 727, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 197, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 374, in _request_wrapper
+    raise exception
+telegram.error.InvalidToken: Not Found
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 115, in network_retry_loop
+    if not await do_action():
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 93, in do_action
+    return await action_cb()
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_application.py", line 489, in initialize
+    await self.bot.initialize()
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 316, in initialize
+    await super().initialize()
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 847, in initialize
+    raise InvalidToken(f"The token `{self._token}` was rejected by the server.") from exc
+telegram.error.InvalidToken: The token `8009536179:8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA` was rejected by the server.
+2025-07-21 09:09:33,561 | INFO | TVSnapBot | Flask TV webhook listening on port 8081
+2025-07-21 09:09:33,651 | INFO | werkzeug | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8081
+ * Running on http://192.168.1.154:8081
+2025-07-21 09:09:33,651 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
+2025-07-21 09:09:35,854 | INFO | TVSnapBot | Bot polling… (Quotex default)  |  Webhook on port 8081
+2025-07-21 09:09:38,105 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:NEW_TOKEN_FROM_BOTFATHER/getMe "HTTP/1.1 401 Unauthorized"
+2025-07-21 09:09:38,108 | ERROR | telegram.ext | Network Retry Loop (Bootstrap Initialize Application): Invalid token. Aborting retry loop.
+Traceback (most recent call last):
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 845, in initialize
+    await self.get_me()
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 1981, in get_me
+    return await super().get_me(
+           ^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 976, in get_me
+    result = await self._post(
+             ^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 698, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 727, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 197, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 374, in _request_wrapper
+    raise exception
+telegram.error.InvalidToken: Unauthorized
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 115, in network_retry_loop
+    if not await do_action():
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 93, in do_action
+    return await action_cb()
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_application.py", line 489, in initialize
+    await self.bot.initialize()
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 316, in initialize
+    await super().initialize()
+  File "C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot\.venv\Lib\site-packages\telegram\_bot.py", line 847, in initialize
+    raise InvalidToken(f"The token `{self._token}` was rejected by the server.") from exc
+telegram.error.InvalidToken: The token `8009536179:NEW_TOKEN_FROM_BOTFATHER` was rejected by the server.
