@@ -1,32 +1,41 @@
 #!/usr/bin/env python
 """
-TradingView Snapshot Telegram Bot - FX/OTC + Media Groups + Mapping
--------------------------------------------------------------------
+TradingView Snapshot Telegram Bot
+---------------------------------
 Features:
-  • /start /help /pairs /menu /snap /snaplist /snapall /snapmulti
-  • Exact-pair input: EUR/USD, USD/CHF, EUR/USD-OTC, USD/MXN-OTC, etc.
-  • Auto map OTC names to underlying TradingView symbols.
-  • Multiple exchange fallbacks to reduce 404 errors (FX, FX_IDC, OANDA, FOREXCOM).
-  • Batch snapshot commands send Telegram albums (media groups) in chunks of 10.
-  • Uses external Node screenshot backend (/run) you deployed on Render.
+  • /start /help /pairs /menu /snap /snapmulti /snaplist /snapall /alerttest
+  • FX + OTC exact pair mapping (EUR/USD, EUR/USD-OTC, KES/USD-OTC, etc.)
+  • Screenshot backend: Node/Puppeteer (/run route) — local or Render
+  • Album batching (sendMediaGroup) for multi-pair commands
+  • TradingView webhook endpoint (/tv) → Telegram auto-signal + chart
 
-Environment (optional overrides):
+Environment variables (optional overrides):
   TELEGRAM_BOT_TOKEN=...
-  SNAPSHOT_BASE_URL=https://tradingviewsnapshotbot.onrender.com
-  DEFAULT_INTERVAL=1      # 1-minute by default
+  TELEGRAM_CHAT_ID=...            # default chat for TradingView alerts
+  SNAPSHOT_BASE_URL=http://localhost:10000
+  DEFAULT_EXCHANGE=FX
+  DEFAULT_INTERVAL=1
   DEFAULT_THEME=dark
-  DEFAULT_EXCHANGE=FX     # try FX first (generic); others tried automatically if needed
   EXOTIC_EXCHANGE=FX_IDC
+  TV_WEBHOOK_PORT=8081            # Flask webhook server listen port
+
+If running behind ngrok, expose the Flask port (e.g., 8081) and use
+  https://<ngrok>.ngrok-free.app/tv   as the webhook URL in TradingView.
 """
 
 import os
 import re
 import io
+import json
+import time
 import asyncio
 import logging
+import threading
 from typing import List, Tuple, Dict, Optional
 
 import requests
+from flask import Flask, request, jsonify
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -44,7 +53,7 @@ from telegram.ext import (
 )
 
 # ─────────────────────────────────────────────────────────
-# Optional nest_asyncio (safe no-op if unavailable)
+# Optional nest_asyncio (safe even if duplicated)
 # ─────────────────────────────────────────────────────────
 try:
     import nest_asyncio
@@ -62,29 +71,22 @@ logging.basicConfig(
 logger = logging.getLogger("TVSnapBot")
 
 # ─────────────────────────────────────────────────────────
-# Optional .env
-# ─────────────────────────────────────────────────────────
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
-
-# ─────────────────────────────────────────────────────────
-# Config (env overrides)
+# Env
 # ─────────────────────────────────────────────────────────
 TOKEN            = os.environ.get("TELEGRAM_BOT_TOKEN") or "REPLACE_ME"
+DEFAULT_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID")   # optional; for TV alerts
 BASE_URL         = os.environ.get("SNAPSHOT_BASE_URL", "http://localhost:10000")
 DEFAULT_EXCHANGE = os.environ.get("DEFAULT_EXCHANGE", "FX")
-DEFAULT_INTERVAL = os.environ.get("DEFAULT_INTERVAL", "1")
+DEFAULT_INTERVAL = os.environ.get("DEFAULT_INTERVAL", "1")    # minutes unless TV code uses letter
 DEFAULT_THEME    = os.environ.get("DEFAULT_THEME", "dark")
 EXOTIC_EXCHANGE  = os.environ.get("EXOTIC_EXCHANGE", "FX_IDC")
+TV_WEBHOOK_PORT  = int(os.environ.get("TV_WEBHOOK_PORT", "8081"))
 
 if TOKEN == "REPLACE_ME":
-    raise RuntimeError("Please set TELEGRAM_BOT_TOKEN (env var) or edit script.")
+    raise RuntimeError("Set TELEGRAM_BOT_TOKEN env var or edit tvsnapshotbot.py.")
 
 # ------------------------------------------------------------------
-# FX & OTC lists shown to user (exact format)
+# Pair definitions (exact names shown to user)
 # ------------------------------------------------------------------
 FX_PAIRS: List[str] = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
@@ -93,6 +95,7 @@ FX_PAIRS: List[str] = [
     "USD/MXN", "USD/TRY", "USD/ZAR", "AUD/CHF", "EUR/CHF",
 ]
 
+# OTC (include the ones from your screenshots + common majors)
 OTC_PAIRS: List[str] = [
     "EUR/USD-OTC", "GBP/USD-OTC", "USD/JPY-OTC", "USD/CHF-OTC", "AUD/USD-OTC",
     "NZD/USD-OTC", "USD/CAD-OTC", "EUR/GBP-OTC", "EUR/JPY-OTC", "GBP/JPY-OTC",
@@ -106,7 +109,7 @@ ALL_PAIRS: List[str] = FX_PAIRS + OTC_PAIRS
 # Canonicalization helpers
 # ------------------------------------------------------------------
 def _canon_key(pair: str) -> str:
-    """Uppercase, remove spaces & slashes. Ensure '-OTC' form."""
+    """Uppercase, remove spaces & slashes. Ensure '-OTC' if present."""
     s = pair.strip().upper().replace(" ", "")
     s = s.replace("/", "")
     if s.endswith("OTC") and not s.endswith("-OTC"):
@@ -114,20 +117,19 @@ def _canon_key(pair: str) -> str:
     return s
 
 # ------------------------------------------------------------------
-# Build mapping: canonical key -> (exchange, ticker)
-# You may override exchange/ticker per pair as needed.
+# Pair map: canonical → (exchange, ticker)
 # ------------------------------------------------------------------
 PAIR_MAP: Dict[str, Tuple[str, str]] = {}
 
 def _add_pair(name: str, ex: str, tk: str):
     PAIR_MAP[_canon_key(name)] = (ex, tk)
 
-# FX mapped to DEFAULT_EXCHANGE by default
+# FX pairs map to DEFAULT_EXCHANGE
 for p in FX_PAIRS:
     tk = p.replace("/", "")
     _add_pair(p, DEFAULT_EXCHANGE, tk)
 
-# OTC mapped to underlying FX or exotic feed
+# OTC underlying mapping
 _underlying_map = {
     "EUR/USD-OTC": (DEFAULT_EXCHANGE, "EURUSD"),
     "GBP/USD-OTC": (DEFAULT_EXCHANGE, "GBPUSD"),
@@ -141,7 +143,7 @@ _underlying_map = {
     "GBP/JPY-OTC": (DEFAULT_EXCHANGE, "GBPJPY"),
     "AUD/CHF-OTC": (DEFAULT_EXCHANGE, "AUDCHF"),
     "EUR/CHF-OTC": (DEFAULT_EXCHANGE, "EURCHF"),
-    "KES/USD-OTC": (EXOTIC_EXCHANGE, "USDKES"),  # inverted feed
+    "KES/USD-OTC": (EXOTIC_EXCHANGE, "USDKES"),  # invert
     "MAD/USD-OTC": (EXOTIC_EXCHANGE, "USDMAD"),
     "USD/BDT-OTC": (EXOTIC_EXCHANGE, "USDBDT"),
     "USD/MXN-OTC": (EXOTIC_EXCHANGE, "USDMXN"),
@@ -152,12 +154,11 @@ for p, (ex, tk) in _underlying_map.items():
     _add_pair(p, ex, tk)
 
 # ------------------------------------------------------------------
-# Exchanges to try if the first one fails (fallback list)
-# Order matters: we'll try the mapped exchange first, then these:
+# Exchange fallbacks (order matters)
 # ------------------------------------------------------------------
 EXCHANGE_FALLBACK_ORDER = [
-    DEFAULT_EXCHANGE,    # e.g. FX
-    "FX_IDC",
+    DEFAULT_EXCHANGE,  # e.g., FX
+    EXOTIC_EXCHANGE,   # e.g., FX_IDC
     "OANDA",
     "FOREXCOM",
     "FXCM",
@@ -166,7 +167,6 @@ EXCHANGE_FALLBACK_ORDER = [
 
 # ------------------------------------------------------------------
 # Interval normalization
-#   Accepts: 1, 5, 15m, 1h, 4h, D, 1d, W, 1w, etc.
 # ------------------------------------------------------------------
 def norm_interval(tf: str) -> str:
     if not tf:
@@ -215,10 +215,14 @@ def resolve_symbol(raw: str) -> Tuple[str, str, bool]:
 
 # ------------------------------------------------------------------
 # Node screenshot backend calls
-# Node expects: /run?base=chart&exchange=FX&ticker=EURUSD&interval=1&theme=dark
+# NOTE: Node expects separate exchange & ticker params.
 # ------------------------------------------------------------------
 def build_run_url(exchange: str, ticker: str, interval: str, theme: str, base: str = "chart") -> str:
     return f"{BASE_URL}/run?base={base}&exchange={exchange}&ticker={ticker}&interval={interval}&theme={theme}"
+
+def build_run_url_alt(symbol_full: str, interval: str, theme: str, base: str = "chart") -> str:
+    # fallback: send combined (some forks accept symbol=EX:TICKER)
+    return f"{BASE_URL}/run?base={base}&ticker={symbol_full}&interval={interval}&theme={theme}"
 
 def build_start_browser_url() -> str:
     return f"{BASE_URL}/start-browser"
@@ -232,7 +236,8 @@ def try_start_browser():
 
 def fetch_snapshot_png_first_ok(ex: str, tk: str, interval: str, theme: str) -> bytes:
     """
-    Try mapped exchange first; if 404 or >=400, try fallbacks.
+    Try mapped exchange first; if 4xx/5xx, try fallback exchanges,
+    then alt format (?ticker=EX:TICKER).
     """
     tried = []
     candidates = [ex] + [e for e in EXCHANGE_FALLBACK_ORDER if e != ex]
@@ -245,10 +250,21 @@ def fetch_snapshot_png_first_ok(ex: str, tk: str, interval: str, theme: str) -> 
             r = requests.get(url, timeout=60)
             if r.status_code == 200:
                 return r.content
-            else:
-                last_err = f"{r.status_code} {r.text[:200]}"
+            last_err = f"{r.status_code} {r.text[:200]}"
         except Exception as e:
             last_err = str(e)
+
+    # alt style
+    alt_symbol = f"{ex}:{tk}"
+    url2 = build_run_url_alt(alt_symbol, interval, theme)
+    tried.append(url2)
+    try:
+        r2 = requests.get(url2, timeout=60)
+        if r2.status_code == 200:
+            return r2.content
+        last_err = f"(alt) {r2.status_code} {r2.text[:200]}"
+    except Exception as e:
+        last_err = f"(alt) {e}"
 
     raise RuntimeError(f"All exchanges failed for {tk}. Last error: {last_err}. Tried: {tried}")
 
@@ -275,34 +291,25 @@ async def send_snapshot_photo(
         await context.bot.send_message(chat_id=chat_id, text=f"❌ Failed: {exchange}:{ticker} ({e})")
 
 def _make_media_item(png_bytes: bytes, caption: Optional[str] = None) -> InputMediaPhoto:
-    # Telegram requires file-like or raw input. BytesIO used.
     bio = io.BytesIO(png_bytes)
-    bio.name = "chart.png"  # Telegram uses filename hint
-    if caption:
-        return InputMediaPhoto(media=bio, caption=caption)
-    return InputMediaPhoto(media=bio)
+    bio.name = "chart.png"
+    return InputMediaPhoto(media=bio, caption=caption)
 
-async def build_media_items_for_pairs(
+def build_media_items_sync(
     pairs: List[Tuple[str, str, str]],
     interval: str,
     theme: str,
-    prefix: str = "",
+    prefix: str,
 ) -> List[InputMediaPhoto]:
-    """
-    pairs: list of (exchange, ticker, label_for_user)
-    returns InputMediaPhoto objects (caption on first of each album chunk later)
-    """
     items: List[InputMediaPhoto] = []
-    for ex, tk, label in pairs:
-        try_start_browser()  # quick ping, non-blocking
+    for idx, (ex, tk, lab) in enumerate(pairs):
         try:
             png = fetch_snapshot_png_first_ok(ex, tk, interval, theme)
-            cap = f"{prefix}{ex}:{tk} • {label} • TF {interval} • {theme}"
+            # caption only first in album chunk later; attach now, we may strip later
+            cap = f"{prefix}{ex}:{tk} • {lab} • TF {interval} • {theme}"
             items.append(_make_media_item(png, cap))
         except Exception as e:
-            # Fallback error photo? Simpler: send text after album send.
-            logger.warning("Pair %s:%s failed: %s", ex, tk, e)
-            # Create a 1px blank? Too much. We'll just skip & log; caller can send summary.
+            logger.warning("Failed building media for %s:%s -> %s", ex, tk, e)
     return items
 
 async def send_media_group_chunked(
@@ -311,60 +318,23 @@ async def send_media_group_chunked(
     media_items: List[InputMediaPhoto],
     chunk_size: int = 10,
 ):
-    # Telegram limit is 10 per media group
+    # Telegram allows caption only on first item of chunk
     for i in range(0, len(media_items), chunk_size):
         chunk = media_items[i:i+chunk_size]
         if not chunk:
             continue
+        # ensure only first has caption; others None
+        if len(chunk) > 1:
+            first_cap = chunk[0].caption
+            for m in chunk[1:]:
+                m.caption = None
         await context.bot.send_media_group(chat_id=chat_id, media=chunk)
         await asyncio.sleep(0.5)
 
 # ------------------------------------------------------------------
-# UI keyboard builders
-# ------------------------------------------------------------------
-def build_main_menu_kb() -> InlineKeyboardMarkup:
-    buttons = [
-        [
-            InlineKeyboardButton("📊 FX Pairs",  callback_data="menu:fx"),
-            InlineKeyboardButton("🕒 OTC Pairs", callback_data="menu:otc"),
-        ],
-    ]
-    # quick top 4
-    for p in ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF"]:
-        buttons.append([InlineKeyboardButton(p, callback_data=f"pair:{p}")])
-    return InlineKeyboardMarkup(buttons)
-
-def build_fx_kb() -> InlineKeyboardMarkup:
-    buttons = []
-    row = []
-    for p in FX_PAIRS:
-        row.append(InlineKeyboardButton(p, callback_data=f"pair:{p}"))
-        if len(row) == 2:
-            buttons.append(row); row=[]
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("⬅ Back", callback_data="menu:root")])
-    return InlineKeyboardMarkup(buttons)
-
-def build_otc_kb() -> InlineKeyboardMarkup:
-    buttons = []
-    row = []
-    for p in OTC_PAIRS:
-        row.append(InlineKeyboardButton(p, callback_data=f"pair:{p}"))
-        if len(row) == 2:
-            buttons.append(row); row=[]
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("⬅ Back", callback_data="menu:root")])
-    return InlineKeyboardMarkup(buttons)
-
-# ------------------------------------------------------------------
-# Command helpers
+# Argument parsing helpers
 # ------------------------------------------------------------------
 def parse_snap_args(args: List[str]) -> Tuple[str, str, str, str]:
-    """
-    /snap EUR/USD 5 light
-    """
     symbol = args[0] if args else "EUR/USD"
     tf     = args[1] if len(args) >= 2 and args[1].lower() not in ("light","dark") else DEFAULT_INTERVAL
     theme  = args[-1] if len(args) >= 2 and args[-1].lower() in ("light","dark") else DEFAULT_THEME
@@ -374,7 +344,6 @@ def parse_snap_args(args: List[str]) -> Tuple[str, str, str, str]:
 def parse_multi_args(args: List[str]) -> Tuple[List[str], str, str]:
     """
     /snapmulti EUR/USD GBP/USD USD/JPY 5 light
-    Return: [pairs], interval, theme
     """
     if not args:
         return [], DEFAULT_INTERVAL, DEFAULT_THEME
@@ -385,8 +354,8 @@ def parse_multi_args(args: List[str]) -> Tuple[List[str], str, str]:
         rest = args[:-1]
     else:
         rest = args[:]
-    # interval guess = second to last token if numeric-ish
-    if rest and re.match(r"^\d+[mh]?$|^[dw]$|^[dw]1?$", rest[-1].lower()):
+    # interval guess
+    if rest and re.match(r"^\d+[mh]?$|^[dw]$|^(d|w|m)$|^([0-9]+[hd])$", rest[-1].lower()):
         tf = rest[-1]
         rest = rest[:-1]
     pairs = rest
@@ -395,21 +364,54 @@ def parse_multi_args(args: List[str]) -> Tuple[List[str], str, str]:
     return pairs, norm_interval(tf), norm_theme(theme)
 
 # ------------------------------------------------------------------
-# Commands
+# Inline keyboard builders
+# ------------------------------------------------------------------
+def build_main_menu_kb() -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton("📊 FX Pairs",  callback_data="menu:fx"),
+            InlineKeyboardButton("🕒 OTC Pairs", callback_data="menu:otc"),
+        ],
+    ]
+    for p in ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF"]:
+        buttons.append([InlineKeyboardButton(p, callback_data=f"pair:{p}")])
+    return InlineKeyboardMarkup(buttons)
+
+def build_fx_kb() -> InlineKeyboardMarkup:
+    buttons, row = [], []
+    for p in FX_PAIRS:
+        row.append(InlineKeyboardButton(p, callback_data=f"pair:{p}"))
+        if len(row) == 2:
+            buttons.append(row); row=[]
+    if row: buttons.append(row)
+    buttons.append([InlineKeyboardButton("⬅ Back", callback_data="menu:root")])
+    return InlineKeyboardMarkup(buttons)
+
+def build_otc_kb() -> InlineKeyboardMarkup:
+    buttons, row = [], []
+    for p in OTC_PAIRS:
+        row.append(InlineKeyboardButton(p, callback_data=f"pair:{p}"))
+        if len(row) == 2:
+            buttons.append(row); row=[]
+    if row: buttons.append(row)
+    buttons.append([InlineKeyboardButton("⬅ Back", callback_data="menu:root")])
+    return InlineKeyboardMarkup(buttons)
+
+# ------------------------------------------------------------------
+# Command handlers
 # ------------------------------------------------------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name if update.effective_user else "there"
     text = (
         f"Hi {name}! 👋\n\n"
-        "I grab TradingView snapshots for Forex & OTC pairs.\n\n"
-        "Examples:\n"
+        "I grab TradingView snapshots for Forex & OTC.\n\n"
+        "Try:\n"
         "/snap EUR/USD 5 light\n"
-        "/snap EUR/USD-OTC\n"
-        "/snaplist fx   (FX batch)\n"
-        "/snaplist otc  (OTC batch)\n"
-        "/snapmulti EUR/USD GBP/USD USD/JPY\n"
-        "/snapall (ALL pairs — lots!)\n\n"
-        "Use /menu for buttons, /help for full guide."
+        "/snaplist fx\n"
+        "/snapmulti EUR/USD GBP/USD 15 dark\n"
+        "/snapall\n"
+        "/alerttest EUR/USD CALL 5m\n\n"
+        "Use /menu for buttons."
     )
     await context.bot.send_message(update.effective_chat.id, text=text, reply_markup=build_main_menu_kb())
 
@@ -417,13 +419,12 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📘 *Help*\n\n"
         "/snap SYMBOL [interval] [theme]\n"
-        "/snapmulti SYMBOL1 SYMBOL2 ... [interval] [theme]\n"
-        "/snaplist fx|otc|EXCH SYM1 SYM2 ... INT [theme]\n"
+        "/snapmulti S1 S2 ... [interval] [theme]\n"
+        "/snaplist fx|otc|EX SYM1 SYM2 ... INT [theme]\n"
         "/snapall (ALL)\n"
-        "/pairs (list)\n"
-        "/menu (buttons)\n\n"
-        "Intervals: 1,5,15,60, D, W, etc. Also 1m/5m/1h.\n"
-        "Themes: dark | light."
+        "/alerttest SYMBOL DIR [expiry]\n"
+        "/menu (buttons)  |  /pairs (list)\n\n"
+        "Intervals: 1,5,15,60,D,W,...   Themes: dark|light."
     )
     await context.bot.send_message(update.effective_chat.id, text=text, parse_mode="Markdown")
 
@@ -455,9 +456,9 @@ async def cmd_snap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_snaplist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /snaplist          -> show list (text)
-    /snaplist fx       -> FX batch (albums)
-    /snaplist otc      -> OTC batch (albums)
-    /snaplist EX SYM1 SYM2 ... INT [theme] -> manual single-send per pair (photo)
+    /snaplist fx       -> FX batch album
+    /snaplist otc      -> OTC batch album
+    /snaplist EX SYM1 SYM2 ... INT [theme] -> manual single sends
     """
     args = context.args
     chat_id = update.effective_chat.id
@@ -477,7 +478,6 @@ async def cmd_snaplist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # manual mode
     exchange = args[0].upper()
-    # theme
     theme = DEFAULT_THEME
     if args[-1].lower() in ("light","dark"):
         theme = args[-1].lower()
@@ -486,23 +486,17 @@ async def cmd_snaplist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         tf = DEFAULT_INTERVAL
         toks = args[1:]
-
     if not toks:
         await context.bot.send_message(chat_id, "No symbols. Usage: /snaplist EX SYM1 SYM2 ... INT [theme]")
         return
 
     await context.bot.send_message(chat_id, f"Capturing {len(toks)} from {exchange}…")
     for sym in toks:
-        # we do not remap exchange in manual mode; assume user knows
         _, tk, _ = resolve_symbol(sym)
         await send_snapshot_photo(chat_id, context, exchange, tk, norm_interval(tf), norm_theme(theme))
         await asyncio.sleep(1.0)
 
 async def cmd_snapmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /snapmulti EUR/USD GBP/USD USD/JPY 5 light
-    Creates album(s).
-    """
     pairs, tf, theme = parse_multi_args(context.args)
     if not pairs:
         await context.bot.send_message(update.effective_chat.id, "Usage: /snapmulti P1 P2 ... [interval] [theme]")
@@ -510,17 +504,36 @@ async def cmd_snapmulti(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await batch_media_albums(update.effective_chat.id, context, pairs, tf, theme, prefix="[MULTI] ")
 
 async def cmd_snapall(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    All FX + OTC (albums).
-    """
     chat_id = update.effective_chat.id
-    await context.bot.send_message(chat_id, "⚡ Capturing ALL FX + OTC pairs (this may take a bit)…")
+    await context.bot.send_message(chat_id, "⚡ Capturing ALL FX + OTC pairs…")
     await batch_media_albums(chat_id, context, FX_PAIRS, DEFAULT_INTERVAL, DEFAULT_THEME, prefix="[FX] ")
     await batch_media_albums(chat_id, context, OTC_PAIRS, DEFAULT_INTERVAL, DEFAULT_THEME, prefix="[OTC] ")
 
 # ------------------------------------------------------------------
+# /alerttest SYMBOL DIR [expiry]
+# Simulate a TradingView webhook payload
+# ------------------------------------------------------------------
+async def cmd_alerttest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await context.bot.send_message(update.effective_chat.id, "Usage: /alerttest SYMBOL DIR [expiry]")
+        return
+    symbol = args[0]
+    direction = args[1] if len(args) >= 2 else "CALL"
+    expiry = args[2] if len(args) >= 3 else "5m"
+
+    # simulate webhook handling
+    payload = {
+        "symbol": symbol,
+        "direction": direction,
+        "expiry": expiry,
+        "source": "alerttest",
+        "time": int(time.time()*1000),
+    }
+    await handle_tv_alert_to_telegram(update.effective_chat.id, context, payload)
+
+# ------------------------------------------------------------------
 # Batch album sender
-# pairs_arg may be list of exact pair strings OR list of (ex,tk,label)
 # ------------------------------------------------------------------
 async def batch_media_albums(
     chat_id: int,
@@ -530,54 +543,37 @@ async def batch_media_albums(
     theme: str,
     prefix: str = "",
 ):
-    # Normalize pairs_arg into list[(ex,tk,label)]
+    # Normalize to list[(ex,tk,label)]
     pairs: List[Tuple[str,str,str]] = []
     if pairs_arg and isinstance(pairs_arg[0], tuple):
-        # already structured
-        for ex, tk, lab in pairs_arg:
-            pairs.append((ex, tk, lab))
+        pairs = [(ex, tk, lab) for ex, tk, lab in pairs_arg]
     else:
         for p in pairs_arg:
             ex, tk, _ = resolve_symbol(p)
             pairs.append((ex, tk, p))
-
     interval = norm_interval(interval)
     theme = norm_theme(theme)
 
     await context.bot.send_message(chat_id, f"Fetching {len(pairs)} charts…")
-    # Build media items
     media_items = await asyncio.to_thread(build_media_items_sync, pairs, interval, theme, prefix)
     if not media_items:
         await context.bot.send_message(chat_id, "No charts captured.")
         return
-
-    # Send chunked
     await send_media_group_chunked(chat_id, context, media_items, chunk_size=10)
 
-def build_media_items_sync(pairs: List[Tuple[str,str,str]], interval: str, theme: str, prefix: str) -> List[InputMediaPhoto]:
-    items: List[InputMediaPhoto] = []
-    for ex, tk, lab in pairs:
-        try:
-            png = fetch_snapshot_png_first_ok(ex, tk, interval, theme)
-            cap = f"{prefix}{ex}:{tk} • {lab} • TF {interval} • {theme}"
-            items.append(_make_media_item(png, cap))
-        except Exception as e:
-            logger.warning("Failed building media for %s:%s -> %s", ex, tk, e)
-    return items
-
 # ------------------------------------------------------------------
-# Callback handler for inline keyboard
+# Callback handler (inline menu)
 # ------------------------------------------------------------------
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data or ""
-    chat_id = query.message.chat.id
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    chat_id = q.message.chat.id
 
     if data == "menu:root":
         await context.bot.edit_message_text(
             chat_id=chat_id,
-            message_id=query.message.message_id,
+            message_id=q.message.message_id,
             text="Choose a group or pair:",
             reply_markup=build_main_menu_kb(),
         )
@@ -586,7 +582,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "menu:fx":
         await context.bot.edit_message_text(
             chat_id=chat_id,
-            message_id=query.message.message_id,
+            message_id=q.message.message_id,
             text="FX Pairs:",
             reply_markup=build_fx_kb(),
         )
@@ -595,24 +591,24 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "menu:otc":
         await context.bot.edit_message_text(
             chat_id=chat_id,
-            message_id=query.message.message_id,
+            message_id=q.message.message_id,
             text="OTC Pairs:",
             reply_markup=build_otc_kb(),
         )
         return
 
     if data.startswith("pair:"):
-        pair_name = data.split(":", 1)[1]
+        pair_name = data.split(":",1)[1]
         ex, tk, _ = resolve_symbol(pair_name)
         await send_snapshot_photo(chat_id, context, ex, tk, DEFAULT_INTERVAL, DEFAULT_THEME)
-        # show menu again
+        await asyncio.sleep(0.2)
         await context.bot.send_message(chat_id, "Choose another:", reply_markup=build_main_menu_kb())
         return
 
     await context.bot.send_message(chat_id, f"⚠ Unknown action: {data}")
 
 # ------------------------------------------------------------------
-# Fallbacks
+# Fallback handlers
 # ------------------------------------------------------------------
 async def echo_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(update.effective_chat.id, update.message.text)
@@ -621,9 +617,126 @@ async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(update.effective_chat.id, "❌ Unknown command. Try /help.")
 
 # ------------------------------------------------------------------
+# TradingView webhook → Telegram
+#   Called from Flask thread wrapper (sync) OR /alerttest (async)
+# ------------------------------------------------------------------
+def tg_send_message(chat_id: str, text: str, parse_mode: Optional[str] = None):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        data["parse_mode"] = parse_mode
+    try:
+        requests.post(url, data=data, timeout=30)
+    except Exception as e:
+        logger.error("tg_send_message error: %s", e)
+
+def tg_send_photo_bytes(chat_id: str, png_bytes: bytes, caption: str = ""):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+    files = {"photo": ("chart.png", png_bytes, "image/png")}
+    data  = {"chat_id": chat_id, "caption": caption}
+    try:
+        requests.post(url, data=data, files=files, timeout=60)
+    except Exception as e:
+        logger.error("tg_send_photo_bytes error: %s", e)
+
+async def handle_tv_alert_to_telegram(chat_id: int, context: ContextTypes.DEFAULT_TYPE, payload: dict):
+    """
+    Async helper: send formatted signal + chart (Node screenshot).
+    """
+    raw_symbol = payload.get("symbol", "EURUSD")
+    direction  = payload.get("direction", "CALL")
+    expiry     = payload.get("expiry", "")
+    tf         = payload.get("timeframe") or DEFAULT_INTERVAL
+    theme      = payload.get("theme") or DEFAULT_THEME
+
+    ex, tk, _ = resolve_symbol(raw_symbol)
+    tf  = norm_interval(tf)
+    th  = norm_theme(theme)
+
+    msg = (
+        f"🔔 *TradingView Alert*\n"
+        f"Symbol: {raw_symbol}\n"
+        f"Direction: {direction}\n"
+        f"Expiry: {expiry}\n"
+        f"TF: {tf} • Theme: {th}"
+    )
+    await context.bot.send_message(chat_id, msg, parse_mode="Markdown")
+    await send_snapshot_photo(chat_id, context, ex, tk, tf, th)
+
+# ------------------------------------------------------------------
+# Flask app to receive TradingView alerts
+# ------------------------------------------------------------------
+flask_app = Flask(__name__)
+
+@flask_app.route("/tv", methods=["POST"])
+def tv_webhook():
+    """
+    TradingView webhook receiver.
+    TradingView alert must send JSON.
+    Required: symbol
+    Optional: direction, expiry, timeframe, theme, chat_id
+    """
+    try:
+        data = request.get_json(force=True, silent=False)
+    except Exception as e:
+        logger.error("TV webhook JSON error: %s", e)
+        return jsonify({"ok": False, "error": "invalid_json"}), 400
+
+    logger.info("TV webhook data: %s", data)
+
+    # Which Telegram chat to send to?
+    chat_id = str(data.get("chat_id") or DEFAULT_CHAT_ID or "")
+    if not chat_id:
+        logger.warning("No DEFAULT_CHAT_ID and none in payload; dropping.")
+        return jsonify({"ok": False, "error": "no_chat_id"}), 400
+
+    # Parse payload
+    raw_symbol = data.get("symbol", "EURUSD")
+    direction  = data.get("direction", "CALL")
+    expiry     = data.get("expiry", "")
+    tf         = data.get("timeframe") or DEFAULT_INTERVAL
+    th         = data.get("theme") or DEFAULT_THEME
+
+    # Resolve & screenshot (sync path)
+    ex, tk, _ = resolve_symbol(raw_symbol)
+    tf = norm_interval(tf)
+    th = norm_theme(th)
+
+    # message first
+    msg = (
+        f"🔔 *TradingView Alert*\n"
+        f"Symbol: {raw_symbol}\n"
+        f"Direction: {direction}\n"
+        f"Expiry: {expiry}\n"
+        f"TF: {tf} • Theme: {th}"
+    )
+    tg_send_message(chat_id, msg, parse_mode="Markdown")
+
+    try_start_browser()
+    try:
+        png = fetch_snapshot_png_first_ok(ex, tk, tf, th)
+        caption = f"{ex}:{tk} • TF {tf} • {th}"
+        tg_send_photo_bytes(chat_id, png, caption)
+    except Exception as e:
+        logger.error("TV screenshot error: %s", e)
+        tg_send_message(chat_id, f"⚠ Chart snapshot failed for {raw_symbol}: {e}")
+
+    return jsonify({"ok": True}), 200
+
+# ------------------------------------------------------------------
+# Start Flask in background thread
+# ------------------------------------------------------------------
+def start_flask_bg():
+    # threaded=True so multiple webhook calls don’t block bot
+    flask_app.run(host="0.0.0.0", port=TV_WEBHOOK_PORT, debug=False, use_reloader=False, threaded=True)
+
+# ------------------------------------------------------------------
 # Main entry
 # ------------------------------------------------------------------
 async def main():
+    # Start webhook server in background
+    threading.Thread(target=start_flask_bg, daemon=True).start()
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start",     cmd_start))
@@ -631,16 +744,17 @@ async def main():
     app.add_handler(CommandHandler("pairs",     cmd_pairs))
     app.add_handler(CommandHandler("menu",      cmd_menu))
     app.add_handler(CommandHandler("snap",      cmd_snap))
-    app.add_handler(CommandHandler("snaplist",  cmd_snaplist))
     app.add_handler(CommandHandler("snapmulti", cmd_snapmulti))
+    app.add_handler(CommandHandler("snaplist",  cmd_snaplist))
     app.add_handler(CommandHandler("snapall",   cmd_snapall))
+    app.add_handler(CommandHandler("alerttest", cmd_alerttest))
 
     app.add_handler(CallbackQueryHandler(on_callback))
 
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo_text))
     app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
 
-    logger.info("Bot polling…")
+    logger.info(f"Bot polling… TV webhook server on port {TV_WEBHOOK_PORT}")
     await app.run_polling()
 
 if __name__ == "__main__":
