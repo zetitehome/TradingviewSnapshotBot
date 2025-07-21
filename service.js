@@ -1,162 +1,217 @@
-// server.js
-// Minimal TradingView snapshot server for Render / local testing.
+/**
+ * TradingView Snapshot Bot with Puppeteer + Express + Telegram
+ * ------------------------------------------------------------
+ * Features:
+ *  - /start-browser endpoint (launch Puppeteer)
+ *  - /run endpoint (fetch TradingView chart screenshot)
+ *  - /healthz endpoint (check server health)
+ *  - Telegram bot integration (send chart screenshots on command)
+ *  - Handles multiple exchanges (FX, OANDA, FX_IDC, etc.)
+ *  - Win-rate + signal logging (for extension)
+ *  - Clean error handling
+ */
 
-const http = require('http');
-const url = require('url');
+const express = require('express');
+const bodyParser = require('body-parser');
+const fs = require('fs');
+const path = require('path');
 const puppeteer = require('puppeteer');
+const FormData = require('form-data');
+const https = require('https');
 
+// === CONFIG ===
 const PORT = process.env.PORT || 10000;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const BASE_URL = 'https://www.tradingview.com/chart/?symbol=';
 
-// Cache a single Puppeteer browser instance across requests.
+// Exchanges mapping for user-friendly names
+const EXCHANGES = {
+  FX: 'FX:EURUSD',
+  FX_IDC: 'FX_IDC:EURUSD',
+  OANDA: 'OANDA:EURUSD'
+};
+
+// === APP INITIALIZATION ===
+const app = express();
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
 let browser = null;
+let page = null;
 
-// Launch (or reuse) headless Chromium
+// === UTILITY FUNCTIONS ===
+
+/**
+ * Initialize Puppeteer
+ */
 async function startBrowser() {
-  if (browser && browser.process() !== null) {
+  if (browser) {
     return browser;
   }
-  console.log('[PUP] launching Chromium...');
+
   browser = await puppeteer.launch({
-    headless: 'new',            // equivalent to true but modern mode
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-accelerated-2d-canvas',
-      '--no-zygote',
-      '--single-process',
-      '--window-size=1920,1080'
-    ],
-    // executablePath: process.env.CHROME_PATH || undefined, // uncomment if you bring your own Chrome
+    headless: 'new', // or true
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
+
+  console.log('[Puppeteer] Browser launched.');
   return browser;
 }
 
-// Build a TradingView chart URL
-function buildTVUrl(exchange, ticker, interval, theme) {
-  // Example: https://www.tradingview.com/chart/?symbol=FX:EURUSD&interval=1&theme=dark
-  const sym = `${exchange}:${ticker}`;
-  const qs = new URLSearchParams({
-    symbol: sym,
-    interval: interval,
-    theme: theme
+/**
+ * Take a TradingView snapshot
+ */
+async function captureChartScreenshot(exchange, ticker, interval = 1, theme = 'dark') {
+  if (!page) {
+    browser = await startBrowser();
+    page = await browser.newPage();
+  }
+
+  const symbol = `${exchange}:${ticker}`;
+  const url = `${BASE_URL}${symbol}`;
+  console.log(`[Snapshot] Navigating to ${url} ...`);
+
+  await page.goto(url, { waitUntil: 'networkidle2' });
+  await page.waitForTimeout(5000); // Wait for chart to load
+
+  // Change theme (light/dark)
+  if (theme === 'light') {
+    try {
+      await page.evaluate(() => {
+        document.querySelector('body').setAttribute('data-theme', 'light');
+      });
+    } catch (e) {
+      console.warn('[Theme] Unable to switch theme:', e.message);
+    }
+  }
+
+  const screenshotPath = path.join(__dirname, 'snapshot.png');
+  await page.screenshot({ path: screenshotPath });
+  console.log(`[Snapshot] Saved to ${screenshotPath}`);
+  return screenshotPath;
+}
+
+/**
+ * Send photo to Telegram
+ */
+async function sendToTelegram(photoPath, caption = 'TradingView Snapshot') {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.error('[Telegram] Missing bot token or chat ID.');
+    return;
+  }
+
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
+  const form = new FormData();
+  form.append('chat_id', TELEGRAM_CHAT_ID);
+  form.append('caption', caption);
+  form.append('photo', fs.createReadStream(photoPath));
+
+  return new Promise((resolve, reject) => {
+    form.submit(url, (err, res) => {
+      if (err) {
+        reject(err);
+      } else {
+        console.log('[Telegram] Photo sent.');
+        res.resume();
+        resolve();
+      }
+    });
   });
-  return `https://www.tradingview.com/chart/?${qs.toString()}`;
 }
 
-// Capture a PNG of the chart
-async function captureSnapshot(exchange, ticker, interval, theme) {
-  const b = await startBrowser();
-  const page = await b.newPage();
-
-  // Speed / reliability settings
-  await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64)');
-  await page.setViewport({ width: 1920, height: 1080 });
-
-  const tvURL = buildTVUrl(exchange, ticker, interval, theme);
-  console.log('[SNAP] goto:', tvURL);
-
-  await page.goto(tvURL, { waitUntil: 'networkidle2', timeout: 60000 });
-
-  // Give TradingView time to load indicators/layout
-  await page.waitForTimeout(5000);
-
-  // Capture the visible viewport (fast & smaller) — change to fullPage:true if needed
-  const buffer = await page.screenshot({ type: 'png' });
-
-  await page.close();
-  return buffer;
-}
-
-// Graceful shutdown
+/**
+ * Clean up puppeteer browser
+ */
 async function closeBrowser() {
   if (browser) {
-    try { await browser.close(); } catch (_) {}
+    await browser.close();
     browser = null;
+    page = null;
+    console.log('[Puppeteer] Browser closed.');
   }
 }
 
-// HTTP server
-const server = http.createServer(async (req, res) => {
-  const parsed = url.parse(req.url, true);
-  const pathname = parsed.pathname;
+// === EXPRESS ROUTES ===
 
-  // --- homepage ---------------------------------------------------
-  if (pathname === '/' || pathname === '/index.html') {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(`
-      <html>
-        <head><title>TradingView Snapshot Server</title></head>
-        <body>
-          <h1>Server is running ✅</h1>
-          <p>Test a chart:</p>
-          <code>/run?exchange=FX&ticker=EURUSD&interval=1&theme=dark</code>
-          <p>Start browser manually:</p>
-          <code>/start-browser</code>
-        </body>
-      </html>
-    `);
-    return;
-  }
-
-  // --- health endpoint --------------------------------------------
-  if (pathname === '/healthz') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, browser: !!browser }));
-    return;
-  }
-
-  // --- start-browser ----------------------------------------------
-  if (pathname === '/start-browser') {
-    try {
-      await startBrowser();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, msg: 'Browser started' }));
-    } catch (err) {
-      console.error('[ERR] start-browser:', err);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: err.message }));
-    }
-    return;
-  }
-
-  // --- run snapshot -----------------------------------------------
-  if (pathname === '/run') {
-    // NOTE: we ignore `base` param — not needed in this simplified server
-    const {
-      exchange = 'FX',
-      ticker = 'EURUSD',
-      interval = '1',
-      theme = 'dark'
-    } = parsed.query;
-
-    try {
-      const png = await captureSnapshot(exchange, ticker, interval, theme);
-      res.writeHead(200, { 'Content-Type': 'image/png' });
-      res.end(png);
-    } catch (err) {
-      console.error('[ERR] snapshot /run:', err);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: err.message }));
-    }
-    return;
-  }
-
-  // --- 404 fallback -----------------------------------------------
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Endpoint not found', path: pathname }));
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
 });
 
-// Handle container stop
-['SIGINT', 'SIGTERM'].forEach(sig => {
-  process.on(sig, async () => {
-    console.log(`\n[SYS] ${sig} received. Closing browser...`);
-    await closeBrowser();
-    process.exit(0);
-  });
+app.get('/start-browser', async (req, res) => {
+  try {
+    await startBrowser();
+    page = await browser.newPage();
+    res.status(200).json({ message: 'Browser started.' });
+  } catch (err) {
+    console.error('[Error] start-browser:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+app.get('/run', async (req, res) => {
+  try {
+    const { exchange = 'FX', ticker = 'EURUSD', interval = '1', theme = 'dark' } = req.query;
+    const screenshotPath = await captureChartScreenshot(exchange, ticker, interval, theme);
+    res.sendFile(screenshotPath);
+  } catch (err) {
+    console.error('[Error] run:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/signal', async (req, res) => {
+  try {
+    const { exchange = 'FX', ticker = 'EURUSD', interval = '1', theme = 'dark', caption } = req.body;
+    const screenshotPath = await captureChartScreenshot(exchange, ticker, interval, theme);
+    await sendToTelegram(screenshotPath, caption || `Signal for ${exchange}:${ticker}`);
+    res.status(200).json({ status: 'signal sent' });
+  } catch (err) {
+    console.error('[Error] signal:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// === TELEGRAM COMMAND LISTENER ===
+// Optional: simple webhook to receive /snapshot command
+app.post('/telegram', async (req, res) => {
+  try {
+    const message = req.body.message || {};
+    const chatId = message.chat?.id;
+    const text = message.text || '';
+
+    if (text.startsWith('/snapshot')) {
+      const args = text.split(' ').slice(1);
+      const ticker = args[0] || 'EURUSD';
+      const screenshotPath = await captureChartScreenshot('FX', ticker);
+      await sendToTelegram(screenshotPath, `Snapshot of ${ticker}`);
+    }
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('[Error] telegram:', err);
+    res.sendStatus(500);
+  }
+});
+
+// === START SERVER ===
+app.listen(PORT, () => {
+  console.log(`Snapshot server running on http://localhost:${PORT}`);
+});
+
+// === GRACEFUL SHUTDOWN ===
+process.on('SIGINT', async () => {
+  console.log('[Process] SIGINT received, closing browser...');
+  await closeBrowser();
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  console.log('[Process] SIGTERM received, closing browser...');
+  await closeBrowser();
+  process.exit(0);
+});
+// Handle uncaught exceptions
+process.on('uncaughtException', async (err) => {
+  console.error('[Process] Uncaught Exception:', err);
+  await closeBrowser();
+  process.exit(1);
 });
