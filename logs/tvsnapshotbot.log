@@ -214,3 +214,17 @@ telegram.error.InvalidToken: The token `8009536179:NEW_TOKEN_FROM_BOTFATHER` was
  * Running on http://127.0.0.1:8081
  * Running on http://192.168.1.154:8081
 2025-07-21 09:35:51,077 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
+2025-07-21 09:35:55,801 | INFO | TVSnapBot | Bot polling… (Quotex default)  |  Webhook on port 8081
+2025-07-21 09:35:56,805 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getMe "HTTP/1.1 200 OK"
+2025-07-21 09:35:56,903 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/deleteWebhook "HTTP/1.1 200 OK"
+2025-07-21 09:35:56,907 | INFO | telegram.ext.Application | Application started
+2025-07-21 09:36:07,207 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:36:17,307 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:36:27,411 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:36:28,638 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:36:38,558 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:36:40,653 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:36:42,690 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:36:52,961 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:37:03,063 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 09:37:13,160 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
