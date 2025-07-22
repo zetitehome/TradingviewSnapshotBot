@@ -4641,3 +4641,5 @@ telegram.error.BadRequest: Query is too old and response timeout expired or quer
 2025-07-22 11:44:45,293 | INFO | TVSnapBot | Bot starting… BASE_URL=http://localhost:10000 | DefaultEX=FX | WebhookPort=8081 | UI_VISION_URL=None | AUTO_TRADE_FROM_TV=False | SIM_DEBIT=False
 2025-07-22 11:44:45,298 | INFO | TVSnapBot | No state file found; starting fresh.
 2025-07-22 11:44:45,303 | INFO | TVSnapBot | Flask TV webhook listening on port 8081
+2025-07-22 11:49:38,016 | INFO | TVSnapBot | Snapshot success FX:EURUSD via FX
+2025-07-22 12:22:54,940 | INFO | TVSnapBot | Snapshot success FX:EURUSD via FX

@@ -1,0 +1,13 @@
+{
+  "users": {
+    "6337160812": {
+      "pair": "EUR/USD",
+      "expiry": "1m",
+      "theme": "light",
+      "interval": "1",
+      "size_mode": "$",
+      "size_value": 5.0,
+      "auto_trade": false
+    }
+  }
+}
