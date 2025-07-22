@@ -37,6 +37,8 @@ import asyncio
 import logging
 import threading
 import atexit
+from dotenv import load_dotenv
+load_dotenv()  # reads .env in current working directory
 from dataclasses import dataclass, asdict, field
 from typing import (
     List, Tuple, Dict, Optional, Any,
