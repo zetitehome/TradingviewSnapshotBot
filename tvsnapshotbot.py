@@ -21,7 +21,6 @@ Major capabilities
 Run
 ---
 python tvsnapshotbot.py
-
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ import threading
 import atexit
 from dataclasses import dataclass, asdict, field
 from typing import (
-    List, Tuple, Dict, Optional, Any, Callable, Iterable, TypedDict,
+    List, Tuple, Dict, Optional, Any,
 )
 
 import requests
@@ -68,6 +67,10 @@ from telegram.ext import (
     filters,
 )
 
+# --- import rotating handler explicitly (fixes AttributeError) ---
+from logging.handlers import RotatingFileHandler
+
+
 # =============================================================================
 # Logging Setup (unicode-safe, rotating file)
 # =============================================================================
@@ -75,7 +78,7 @@ from telegram.ext import (
 os.makedirs("logs", exist_ok=True)
 LOG_FILE = "logs/tvsnapshotbot.log"
 
-# safe formatter that replaces undecodable characters
+# safe formatter that tolerates bad unicode in log messages
 class SafeFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
         try:
@@ -87,7 +90,7 @@ class SafeFormatter(logging.Formatter):
                 raw = "<unformattable>"
             return f"{record.levelname} | {raw.encode('utf-8','replace').decode('utf-8','replace')}"
 
-_file_handler = logging.handlers.RotatingFileHandler(
+_file_handler = RotatingFileHandler(
     LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
 _file_handler.setFormatter(
@@ -138,6 +141,7 @@ SNAP_ENDPOINT = "/run"          # expects query: exchange=...&ticker=...&interva
 START_BROWSER_ENDPOINT = "/start-browser"
 HEALTH_ENDPOINT = "/healthz"
 
+
 # =============================================================================
 # Rate Limiting
 # =============================================================================
@@ -184,12 +188,11 @@ OTC_LIST: List[str] = [
     "USD/BDT-OTC","USD/MXN-OTC","USD/MYR-OTC","USD/PKR-OTC",
 ]
 
-# --- Indices (TradingView TVC feed primary) ---
-# Display name : (primary_ex, ticker)
+# --- Indices ---
 _INDICES_BASE: Dict[str, Tuple[str,str]] = {
     "US30 (Dow)":        ("TVC","US30"),
     "SPX500 (S&P)":      ("TVC","SPX"),
-    "NAS100 (Nasdaq)":   ("TVC","NDX"),     # alt: NAS100, NDX, NASDAQ100
+    "NAS100 (Nasdaq)":   ("TVC","NDX"),
     "GER40 (DAX)":       ("TVC","GER40"),
     "UK100 (FTSE)":      ("TVC","UKX"),
     "JP225 (Nikkei)":    ("TVC","NI225"),
@@ -198,11 +201,9 @@ _INDICES_BASE: Dict[str, Tuple[str,str]] = {
     "ES1! (Mini)":       ("CME_MINI","ES1!"),
     "NQ1! (Mini)":       ("CME_MINI","NQ1!"),
 }
-
 INDICES_LIST = list(_INDICES_BASE.keys())
 
-# --- Crypto (Binance primaries) ---
-# Use USDT majors to maximize chart availability
+# --- Crypto ---
 _CRYPTO_BASE: Dict[str, Tuple[str,str]] = {
     "BTC/USDT":  ("BINANCE","BTCUSDT"),
     "ETH/USDT":  ("BINANCE","ETHUSDT"),
@@ -217,7 +218,6 @@ _CRYPTO_BASE: Dict[str, Tuple[str,str]] = {
     "MATIC/USDT":("BINANCE","MATICUSDT"),
     "DOT/USDT":  ("BINANCE","DOTUSDT"),
 }
-
 CRYPTO_LIST = list(_CRYPTO_BASE.keys())
 
 
@@ -302,6 +302,7 @@ CATEGORY_TO_SLUGS: Dict[str,List[str]] = {
     "CRYPTO": [_slugify(d) for d in CRYPTO_LIST],
 }
 
+
 # =============================================================================
 # Interval & Theme Normalization
 # =============================================================================
@@ -377,7 +378,9 @@ def resolve_symbol(raw: str) -> Tuple[str, str, bool, List[str]]:
     Returns (primary_exchange, ticker, is_otc, alt_exchanges)
     """
     if not raw:
-        pm = PAIR_REGISTRY[next(iter(CATEGORY_TO_SLUGS["FX"]))]
+        # pick first FX pair if empty
+        slug0 = CATEGORY_TO_SLUGS["FX"][0]
+        pm = PAIR_REGISTRY[slug0]
         return pm.primary_ex, pm.ticker, False, pm.fallbacks
 
     s = raw.strip()
@@ -393,12 +396,12 @@ def resolve_symbol(raw: str) -> Tuple[str, str, bool, List[str]]:
     # explicit EX:TK
     if ":" in up:
         ex, tk = up.split(":", 1)
-        # guess fallbacks by type
-        if ex in CRYPTO_FALLBACKS:
-            return ex, tk, False, CRYPTO_FALLBACKS
-        if ex in INDICES_FALLBACKS:
-            return ex, tk, False, INDICES_FALLBACKS
-        return ex, tk, is_otc, EXCHANGE_FALLBACKS
+        exu = ex.upper()
+        if exu in CRYPTO_FALLBACKS:
+            return exu, tk, False, CRYPTO_FALLBACKS
+        if exu in INDICES_FALLBACKS:
+            return exu, tk, False, INDICES_FALLBACKS
+        return exu, tk, is_otc, EXCHANGE_FALLBACKS
 
     # attempted match ignoring slash/hyphen/space
     ck = _canon_key(up)
@@ -635,12 +638,11 @@ def register_state(uid: int, st: UserState) -> None:
         STATE_REGISTRY[uid] = st
     schedule_state_save()
 
-def get_user_state(context: ContextTypes.DEFAULT_TYPE, user_id: Optional[int] = None) -> UserState:
+def get_user_state(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> UserState:
     """
     Retrieve per-user state from context.user_data; create if needed; merge persistent if exists.
+    (Explicit user_id required — we no longer poke private context attributes.)
     """
-    if user_id is None:
-        user_id = context._user_id  # type: ignore[attr-defined]
     ud = context.user_data
     st = ud.get("_state")
     if isinstance(st, UserState):
@@ -1346,10 +1348,7 @@ async def complete_trade(query: CallbackQuery, context: ContextTypes.DEFAULT_TYP
 
     # optionally debit simulated balance
     if SIM_DEBIT:
-        if smode == SizeMode.PERCENT:
-            debit_amt = amount  # already converted
-        else:
-            debit_amt = amount
+        debit_amt = amount
         st.balance = max(0.0, st.balance - debit_amt)
         register_state(user_id, st)
 
@@ -1649,3 +1648,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+# -*- coding: utf-8 -*-
+# vim: set fileencoding=utf-8 :
