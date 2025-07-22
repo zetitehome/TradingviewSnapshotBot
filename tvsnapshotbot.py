@@ -85,9 +85,11 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3),
+        RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3),
     ],
 )
+# Create a logger for this module
+
 logger = logging.getLogger("TVSnapBot")
 
 # ---------------------------------------------------------------------------
