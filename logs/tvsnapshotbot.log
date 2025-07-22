@@ -4637,3 +4637,4 @@ telegram.error.BadRequest: Query is too old and response timeout expired or quer
  * Running on http://127.0.0.1:8081
  * Running on http://192.168.1.154:8081
 2025-07-22 10:15:58,785 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
+2025-07-22 10:41:12,934 | INFO | TVSnapBot | Bot starting… BASE_URL=http://localhost:10000 | DefaultEX=FX | WebhookPort=8081
