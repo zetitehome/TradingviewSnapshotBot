@@ -3,8 +3,8 @@
     "mode": "USD",
     "usd_size": 5,
     "pct_size": 1.0,
-    "last_pair": null,
-    "last_tf": null,
-    "last_theme": null
+    "last_pair": "SPX",
+    "last_tf": "1",
+    "last_theme": "dark"
   }
 }

@@ -4650,3 +4650,19 @@ telegram.error.BadRequest: Query is too old and response timeout expired or quer
  * Running on http://127.0.0.1:8081
  * Running on http://172.20.10.3:8081
 2025-07-22 14:08:20,600 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
+2025-07-22 16:49:09,429 | INFO | TVSnapBot | No state file found; starting fresh.
+2025-07-22 16:49:09,437 | INFO | TVSnapBot | Flask TV webhook listening on port 8081
+2025-07-22 16:49:09,647 | INFO | werkzeug | [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8081
+ * Running on http://192.168.1.154:8081
+2025-07-22 16:49:09,648 | INFO | werkzeug | [33mPress CTRL+C to quit[0m
+2025-07-22 16:49:15,463 | INFO | telegram.ext.Application | Application started
+2025-07-22 17:01:24,756 | INFO | TVSnapBot | Pocket trade skipped (UI_VISION_URL not set).
+2025-07-22 17:03:08,327 | INFO | TVSnapBot | Pocket trade skipped (UI_VISION_URL not set).
+2025-07-22 17:05:08,306 | WARNING | TVSnapBot | No candles for EUR/USD-OTC; fallback chart only.
+2025-07-22 17:05:35,987 | WARNING | TVSnapBot | Snapshot /snapshot failed (EUR/USD-OTC): 200 {"ok":true,"ex":"FX","tk":"EURUSD-OTC","tf":"1","theme":"dark","w":1280,"h":720,"clean":false,"size"
+2025-07-22 17:11:15,682 | WARNING | TVSnapBot | No candles for SPX; fallback chart only.
+2025-07-22 17:11:41,541 | WARNING | TVSnapBot | Snapshot /snapshot failed (SPX): 200 {"ok":true,"ex":"FX","tk":"SPX","tf":"1","theme":"dark","w":1280,"h":720,"clean":false,"size":10919,
+2025-07-22 17:31:47,621 | INFO | telegram.ext.Application | Application is stopping. This might take a moment.
+2025-07-22 17:31:47,644 | INFO | telegram.ext.Application | Application.stop() complete
