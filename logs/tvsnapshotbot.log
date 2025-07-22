@@ -4168,3 +4168,8 @@ AttributeError: 'Application' object has no attribute 'run_in_executor'
 2025-07-21 20:59:22,425 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
 2025-07-21 20:59:32,580 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
 2025-07-21 20:59:42,837 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 20:59:52,957 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 21:00:03,102 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 21:00:07,078 | INFO | httpx | HTTP Request: POST https://api.telegram.org/bot8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA/getUpdates "HTTP/1.1 200 OK"
+2025-07-21 21:00:07,094 | INFO | telegram.ext.Application | Application is stopping. This might take a moment.
+2025-07-21 21:00:07,111 | INFO | telegram.ext.Application | Application.stop() complete
