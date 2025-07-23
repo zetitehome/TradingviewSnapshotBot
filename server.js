@@ -1,129 +1,76 @@
-// ✅ Updated server.js (Pocket Option + TradingView + Telegram Integration)
-// This version includes: advanced Telegram menu, auto-trade confirmation logic, JSON webhook handler, and trading logic trigger
-
+// server.js
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const { exec } = require('child_process');
-const fs = require('fs');
+
 const app = express();
-const PORT = 3333;
-
-// Load Telegram Bot Settings
-const TELEGRAM_TOKEN = '8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA';
-const TELEGRAM_CHAT_ID = '6337160812';
-
-// Default trade config
-const DEFAULT_TRADE_AMOUNT = 1; // USD
-const DEFAULT_MAX_AMOUNT = 100;
-const BALANCE_PERCENTAGE_MODE = true; // If true, 5%–100% of balance used if auto
-const AUTO_EXECUTE_CONFIDENCE_THRESHOLD = 70; // %
-
 app.use(bodyParser.json());
 
-// === Util: Send Telegram Message ===
-async function sendTelegramMessage(message, replyMarkup = null) {
-  try {
-    const payload = {
-      chat_id: TELEGRAM_CHAT_ID,
-      text: message,
-      parse_mode: 'HTML',
-    };
-    if (replyMarkup) payload.reply_markup = replyMarkup;
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, payload);
-  } catch (err) {
-    console.error('Telegram send error:', err.message);
-  }
+const TELEGRAM_BOT_TOKEN = '8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA';
+const TELEGRAM_CHAT_ID = '6337160812'; // Optional: handle this dynamically
+const CONFIRM_TIMEOUT = 10000; // 10 seconds
+
+let lastSignal = null;
+
+app.post('/callback', async (req, res) => {
+    const signal = req.body;
+
+    if (!signal || !signal.message) {
+        return res.status(400).send('Invalid signal format');
+    }
+
+    lastSignal = signal;
+
+    const tradeMsg = `📥 *New Signal Received:*\n${signal.message}\n\nConfirm? (yes/no)`;
+    await sendTelegramMessage(tradeMsg);
+
+    // Wait for confirmation (basic version)
+    setTimeout(() => {
+        if (signal.autoExecute) {
+            console.log('Auto-executing trade...');
+            runPythonBot(signal);
+        } else {
+            console.log('Awaiting confirmation...');
+        }
+    }, CONFIRM_TIMEOUT);
+
+    res.send('Signal received');
+});
+
+app.get('/', (req, res) => {
+    res.send('📡 Telegram Bot Server is running.');
+});
+
+function sendTelegramMessage(msg) {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    return axios.post(url, {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: msg,
+        parse_mode: "Markdown"
+    });
 }
 
-// === Util: Trigger UI.Vision Macro ===
-function triggerMacro(symbol, action, expiry, amount = DEFAULT_TRADE_AMOUNT) {
-  const command = `curl http://localhost:8080/?macro=trade&symbol=${symbol}&action=${action}&expiry=${expiry}&amount=${amount}`;
-  exec(command, (err, stdout, stderr) => {
-    if (err) return console.error('Macro Trigger Error:', stderr);
-    console.log('Macro Triggered:', stdout);
-  });
+function runPythonBot(signal) {
+    const payload = JSON.stringify(signal).replace(/"/g, '\\"');
+    const command = `python tvsnapshotbot.py "${payload}"`;
+
+    exec(command, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`❌ Error: ${error.message}`);
+            return;
+        }
+        if (stderr) {
+            console.error(`⚠️ stderr: ${stderr}`);
+            return;
+        }
+        console.log(`✅ Python output: ${stdout}`);
+    });
 }
 
-// === Webhook Receiver (TradingView → Bot) ===
-app.post('/webhook', async (req, res) => {
-  const data = req.body;
-  if (!data || !data.symbol || !data.action || !data.confidence) {
-    return res.status(400).send('Missing required fields');
-  }
-
-  const { symbol, action, confidence, expiry = 1, amount = DEFAULT_TRADE_AMOUNT, winrate, snapshot_url } = data;
-
-  // Format message
-  const message = `📥 <b>Signal Received</b>\n
-<b>Pair:</b> ${symbol}
-<b>Action:</b> ${action.toUpperCase()}
-<b>Confidence:</b> ${confidence}%
-<b>Expiry:</b> ${expiry} min
-<b>Expected Winrate:</b> ${winrate || '?'}%
-<b>Amount:</b> $${amount}
-${snapshot_url ? `📸 <a href='${snapshot_url}'>View Chart</a>` : ''}`;
-
-  // Auto-Execute if Confidence >= Threshold
-  if (confidence >= AUTO_EXECUTE_CONFIDENCE_THRESHOLD) {
-    await sendTelegramMessage(`${message}\n\n🚀 Auto-trade will execute now.`);
-    triggerMacro(symbol, action, expiry, amount);
-  } else {
-    await sendTelegramMessage(
-      `${message}\n\n⚠️ Confidence under ${AUTO_EXECUTE_CONFIDENCE_THRESHOLD}%. Confirm trade?`,
-      {
-        inline_keyboard: [
-          [
-            { text: '✅ Yes', callback_data: `confirm|${symbol}|${action}|${expiry}|${amount}` },
-            { text: '❌ No', callback_data: 'cancel' }
-          ]
-        ]
-      }
-    );
-  }
-
-  res.status(200).send('Received');
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
 });
-
-// === Telegram Callback for Confirmation ===
-app.post(`/callback`, async (req, res) => {
-  const { callback_query } = req.body;
-  if (!callback_query) return res.sendStatus(400);
-
-  const { id, data: cbData, message } = callback_query;
-
-  if (cbData.startsWith('confirm')) {
-    const [, symbol, action, expiry, amount] = cbData.split('|');
-    triggerMacro(symbol, action, expiry, amount);
-    await sendTelegramMessage(`📍 Trade Executed
-
-<b>Pair:</b> ${symbol}
-<b>Action:</b> ${action.toUpperCase()}
-<b>Expiry:</b> ${expiry} min
-<b>Amount:</b> $${amount}`);
-  } else {
-    await sendTelegramMessage('❌ Trade Cancelled');
-  }
-  res.sendStatus(200);
-});
-
-// === Menu Command (/menu) ===
-app.get('/menu', async (req, res) => {
-  await sendTelegramMessage(
-    `📊 <b>Quantum Bot Menu</b>
-
-<b>/menu</b> - Show this menu
-<b>/stats</b> - View trading stats
-<b>/analyze</b> - Analyze top pairs
-<b>/help</b> - Strategy Help
-
-🟢 Auto-trading: <code>On</code>
-🔘 Confidence Threshold: ${AUTO_EXECUTE_CONFIDENCE_THRESHOLD}%
-💵 Default Amount: $${DEFAULT_TRADE_AMOUNT}-${DEFAULT_MAX_AMOUNT}
-📍 Entry Mode: ${BALANCE_PERCENTAGE_MODE ? 'Balance %' : 'Fixed $'}`
-  );
-  res.send('Menu Sent');
-});
-
-// === Start Server ===
-app.listen(PORT, () => console.log(`✅ Webhook server running on http://localhost:${PORT}`));
+// Ensure to replace 'YOUR_TELEGRAM_BOT_TOKEN' and 'YOUR_CHAT_ID' with actual values.
+// You can also set these as environment variables for better security.

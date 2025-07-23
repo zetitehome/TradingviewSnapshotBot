@@ -10,6 +10,7 @@
   "author": "zetitehome",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.11.0",
     "body-parser": "^1.20.3",
     "canvas": "^3.1.2",
     "cors": "^2.8.5",
