@@ -1,14 +1,4 @@
-# Here's the corrected and enhanced `tvsnapshotbot.py` with the following additions:
-# - Fixed trade amount defaulted to $1.
-# - Auto/manual trade toggle logic via `/auto`.
-# - Confidence-based execution (auto if >= 70%, ask otherwise).
-# - Snapshot system integrated.
-# - Live stats from `tradelogger`.
-# - Uses local webhook to send UI.Vision macro triggers.
-# - Code assumes `strategy.py` and `tradelogger.py` are already configured to return signal, confidence, and success metrics.
-
-corrected_bot_script = """
-# tvsnapshotbot.py - Quantum Signal Bot (Final Version)
+# tvsnapshotbot.py
 
 import os
 import time
@@ -21,19 +11,22 @@ from aiogram import Bot, Dispatcher, types, executor
 from PIL import Image
 from strategy import SignalStrategy
 from tradelogger import TradeLogger
+import requests
 
+# === Config ===
 API_TOKEN = os.getenv("TELEGRAM_TOKEN") or "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA"
 ADMIN_ID = os.getenv("ADMIN_ID") or "6337160812"
 SNAPSHOT_DIR = "snapshots"
 TRADES_FILE = "trade_logs.json"
-WEBHOOK_URL = "http://localhost:5001/trade"  # Local listener for UI.Vision
+WEBHOOK_URL = "http://localhost:5001/trade"
 LEVELS = ["Quantum I", "Quantum II", "Quantum III", "Quantum IV", "Quantum V"]
 
-# Runtime state
+# === State ===
 AUTO_MODE = False
-CONFIRMATION_THRESHOLD = 70  # confidence %
-FIXED_AMOUNT = 1  # $1
-USE_PERCENTAGE = False  # Toggle between fixed $1 or % balance
+CONFIRMATION_THRESHOLD = 70
+FIXED_AMOUNT = 1
+USE_PERCENTAGE = False
+CONFIRMATION_QUEUE = {}
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
@@ -44,89 +37,90 @@ logger = TradeLogger(TRADES_FILE)
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 
-# === Bot Commands ===
+# === Command Handlers ===
 
 @dp.message_handler(commands=["start", "menu"])
-async def send_welcome(message: types.Message):
-    menu = (
-        "👋 Welcome to Quantum Signal Bot\n"
-        "\n"
-        "📊 Commands:\n"
-        "/signal <pair> - Analyze and send next signal\n"
-        "/stats - View trade statistics\n"
-        "/snapshot - Capture current chart snapshot\n"
-        "/analyze - Scan all major pairs\n"
-        "/auto - Toggle auto/manual trade mode\n"
-        "/mode - Toggle fixed/percent trade amount\n"
+async def send_menu(message: types.Message):
+    text = (
+        "📊 <b>Quantum Signal Bot</b>\n\n"
+        "<b>/signal EURUSD</b> - Analyze a pair\n"
+        "<b>/stats</b> - Show performance\n"
+        "<b>/auto</b> - Toggle auto/manual mode\n"
+        "<b>/mode</b> - Toggle $1 or 5%\n"
+        "<b>/snapshot</b> - Capture chart\n"
+        "<b>/analyze</b> - Scan all majors"
     )
-    await message.reply(menu)
+    await message.reply(text, parse_mode="HTML")
 
 @dp.message_handler(commands=["stats"])
 async def show_stats(message: types.Message):
     stats = logger.get_statistics()
     level = LEVELS[min(4, stats['level'])]
     text = (
-        f"📊 Quantum Level: {level}\n"
-        f"• Total P/L: {stats['total_profit']}\n"
-        f"• Trades: {stats['total_trades']} ({stats['wins']}W/{stats['losses']}L)\n"
-        f"• Success Rate: {stats['success_rate']}%\n"
-        f"• Avg PnL: {stats['avg_profit']}\n"
-        "\n📡 Signals Sent: {stats['signals_sent']}\n"
-        f"• Accuracy: {stats['signal_accuracy']}%\n"
+        f"📊 <b>Level:</b> {level}\n"
+        f"📈 P/L: ${stats['total_profit']}\n"
+        f"✅ Wins: {stats['wins']} / ❌ Losses: {stats['losses']}\n"
+        f"📉 Success Rate: {stats['success_rate']}%\n"
+        f"📊 Trades: {stats['total_trades']}\n"
     )
-    await message.reply(text)
-
-@dp.message_handler(commands=["signal"])
-async def signal_pair(message: types.Message):
-    try:
-        _, pair = message.text.split(" ", 1)
-    except ValueError:
-        await message.reply("❗ Usage: /signal EURUSD")
-        return
-
-    await message.reply(f"📈 Analyzing {pair}...")
-    signal = strategy.generate_signal(pair)
-    file = capture_chart(pair)
-    logger.log_trade(pair, signal)
-
-    caption = f"{signal['summary']} | Confidence: {signal['confidence']}%"
-    await bot.send_photo(message.chat.id, photo=file, caption=caption)
-
-    await handle_trade(message.chat.id, pair, signal)
-
-@dp.message_handler(commands=["analyze"])
-async def analyze_all(message: types.Message):
-    pairs = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
-    await message.reply("🔎 Scanning all major pairs...")
-    for pair in pairs:
-        signal = strategy.generate_signal(pair)
-        file = capture_chart(pair)
-        caption = f"{pair}: {signal['summary']} | Confidence: {signal['confidence']}%"
-        await bot.send_photo(message.chat.id, photo=file, caption=caption)
-        logger.log_trade(pair, signal)
-        await handle_trade(message.chat.id, pair, signal)
-        await asyncio.sleep(1.5)
-
-@dp.message_handler(commands=["snapshot"])
-async def take_snapshot(message: types.Message):
-    file = capture_chart("EURUSD")
-    await bot.send_photo(message.chat.id, photo=file, caption="🖼 Chart Snapshot")
+    await message.reply(text, parse_mode="HTML")
 
 @dp.message_handler(commands=["auto"])
 async def toggle_auto(message: types.Message):
     global AUTO_MODE
     AUTO_MODE = not AUTO_MODE
-    mode = "🔁 Auto-Trade Enabled" if AUTO_MODE else "🛑 Auto-Trade Disabled"
-    await message.reply(mode)
+    await message.reply(f"🔁 Auto Mode: {'ON' if AUTO_MODE else 'OFF'}")
 
 @dp.message_handler(commands=["mode"])
-async def toggle_amount_mode(message: types.Message):
+async def toggle_mode(message: types.Message):
     global USE_PERCENTAGE
     USE_PERCENTAGE = not USE_PERCENTAGE
-    mode = "💵 Mode: 5% of Balance" if USE_PERCENTAGE else "💵 Mode: Fixed $1"
-    await message.reply(mode)
+    await message.reply(f"💵 Entry Mode: {'5% Balance' if USE_PERCENTAGE else '$1 Fixed'}")
 
-# === Trade Handler ===
+@dp.message_handler(commands=["snapshot"])
+async def send_snapshot(message: types.Message):
+    file = capture_chart("EURUSD")
+    await bot.send_photo(message.chat.id, file, caption="🖼 Snapshot")
+
+@dp.message_handler(commands=["analyze"])
+async def analyze_all(message: types.Message):
+    pairs = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
+    for pair in pairs:
+        signal = strategy.generate_signal(pair)
+        file = capture_chart(pair)
+        caption = f"{pair}: {signal['summary']} | Confidence: {signal['confidence']}%"
+        await bot.send_photo(message.chat.id, file, caption=caption)
+        logger.log_trade(pair, signal)
+        await handle_trade(message.chat.id, pair, signal)
+        await asyncio.sleep(1)
+
+@dp.message_handler(commands=["signal"])
+async def signal_pair(message: types.Message):
+    try:
+        _, pair = message.text.split(" ", 1)
+    except:
+        return await message.reply("❗ Usage: /signal EURUSD")
+
+    signal = strategy.generate_signal(pair)
+    file = capture_chart(pair)
+    caption = f"{pair}: {signal['summary']} | Confidence: {signal['confidence']}%"
+    await bot.send_photo(message.chat.id, file, caption=caption)
+    logger.log_trade(pair, signal)
+    await handle_trade(message.chat.id, pair, signal)
+
+@dp.message_handler(lambda message: message.text.lower() in ["yes", "no"])
+async def handle_reply(message: types.Message):
+    user_id = str(message.from_user.id)
+    if user_id in CONFIRMATION_QUEUE:
+        pair, action, expiry = CONFIRMATION_QUEUE[user_id]
+        if message.text.lower() == "yes":
+            await send_trade(pair, action, expiry)
+            await message.reply(f"✅ Manual trade executed for {pair}")
+        else:
+            await message.reply("❌ Trade cancelled.")
+        del CONFIRMATION_QUEUE[user_id]
+
+# === Core Trade Handler ===
 
 async def handle_trade(chat_id, pair, signal):
     global AUTO_MODE
@@ -134,19 +128,17 @@ async def handle_trade(chat_id, pair, signal):
     action = signal.get("action", "CALL")
     expiry = signal.get("expiry", "1m")
 
-    # Decide if auto-trade
-    if AUTO_MODE:
-        if confidence >= CONFIRMATION_THRESHOLD:
-            await send_trade(pair, action, expiry)
-            await bot.send_message(chat_id, f"✅ Auto-trade placed: {pair} {action} ({expiry})")
-        else:
-            await bot.send_message(chat_id, f"⚠️ Confidence {confidence}% — Confirm trade? (Yes/No)")
+    if AUTO_MODE and confidence >= CONFIRMATION_THRESHOLD:
+        await send_trade(pair, action, expiry)
+        await bot.send_message(chat_id, f"🚀 Auto-trade: {pair} {action} ({expiry})")
+    else:
+        CONFIRMATION_QUEUE[str(chat_id)] = (pair, action, expiry)
+        await bot.send_message(chat_id, f"⚠️ {pair} | {action} | {confidence}%\nType 'Yes' to confirm, 'No' to cancel.")
 
-# === Send Trade via Webhook ===
+# === Send Trade Webhook ===
 
 async def send_trade(pair, action, expiry):
-    amount = FIXED_AMOUNT if not USE_PERCENTAGE else "5%"
-
+    amount = "5%" if USE_PERCENTAGE else str(FIXED_AMOUNT)
     payload = {
         "pair": pair,
         "direction": action,
@@ -154,10 +146,9 @@ async def send_trade(pair, action, expiry):
         "amount": amount
     }
     try:
-        import requests
-        requests.post(WEBHOOK_URL, json=payload)
-    except Exception as e:
-        logging.error(f"Webhook send error: {e}")
+        requests.post(WEBHOOK_URL, json=payload, timeout=3)
+    except requests.exceptions.RequestException as e:
+        logging.error(f"❌ Webhook failed: {e}")
 
 # === Snapshot Utility ===
 
@@ -168,12 +159,10 @@ def capture_chart(pair):
     buf.seek(0)
     return buf
 
-# === Bot Runner ===
+# === Run Bot ===
 
 if __name__ == '__main__':
-    logging.info("🚀 Starting Quantum Signal Bot")
+    logging.info("🚀 Bot is running")
     executor.start_polling(dp, skip_updates=True)
-"""
-
-print("✅ tvsnapshotbot.py ready.")
-
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, field
