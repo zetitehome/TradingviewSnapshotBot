@@ -55,11 +55,55 @@ import math
 import os
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List, Dict, Any, Iterable
-
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+@dataclass
+class TradeStatsStore:
+    def __init__(self, file_path="trades.json"):
+        self.file_path = file_path
+        self.trades = []
+        self.load()
+
+    def load(self):
+        if os.path.exists(self.file_path):
+            with open(self.file_path, "r") as f:
+                self.trades = json.load(f)
+        else:
+            self.trades = []
+
+    def save(self):
+        with open(self.file_path, "w") as f:
+            json.dump(self.trades, f, indent=4)
+
+    def log_trade(self, pair, signal, amount, result=None, profit_loss=0):
+        trade = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "pair": pair,
+            "signal": signal,
+            "amount": amount,
+            "result": result,
+            "profit_loss": profit_loss
+        }
+        self.trades.append(trade)
+        self.save()
+
+    def stats(self):
+        total = len(self.trades)
+        wins = len([t for t in self.trades if t.get("result") == "win"])
+        losses = len([t for t in self.trades if t.get("result") == "loss"])
+        winrate = (wins / total * 100) if total > 0 else 0
+        profit = sum(t.get("profit_loss", 0) for t in self.trades)
+        return {
+            "total_trades": total,
+            "wins": wins,
+            "losses": losses,
+            "winrate": winrate,
+            "total_profit": profit
+        }
+
 
 @dataclass
 class TradeRecord:
