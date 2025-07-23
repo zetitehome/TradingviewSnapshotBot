@@ -1,659 +1,644 @@
-#!/usr/bin/env node
-/* eslint-disable no-console */
 /**
- * TradingView Snapshot Service
- * ============================
- *
- * Provides chart PNG snapshots for use by tvsnapshotbot.py.
+ * TradingView Snapshot & Analysis Service
+ * =======================================
+ * Provides PNG screenshots, lightweight TA JSON, and instrument lists
+ * for your Telegram bot + TradingView alert workflows.
  *
  * Endpoints
  * ---------
- * GET /healthz
- *   -> 200 JSON {ok:true}
- *
- * GET /start-browser
- *   -> spins up (or confirms) global Puppeteer browser. JSON.
- *
- * GET /snapshot/:pair
- *   -> :pair may be "FX:EURUSD", "EURUSD", "EUR/USD", "EUR/USD-OTC", etc.
- *   Query params:
- *       tf=1       (interval; minutes, or D/W/M)
- *       theme=dark (dark|light)
- *       w=1280     (optional viewport width)
- *       h=800      (optional viewport height)
- *       clip=1     (attempt chart-only crop)
- *
- * GET /run?exchange=FX&ticker=EURUSD&interval=1&theme=dark
- *   Legacy compatibility for older Python bot versions.
- *   Query param base=chart accepted but ignored.
- *
- * GET /metrics
- *   -> simple text metrics.
- *
- * GET /close-browser
- *   -> shutdown global browser (debug).
- *
- * Behavior
- * --------
- * - Launches Puppeteer Chromium lazily (first request or /start-browser).
- * - Serializes nav/screenshot via a simple async queue to avoid race chaos.
- * - Attempts multi-symbol fallback (FX_IDC, OANDA, etc) if requested symbol fails.
- * - Hides TradingView UI chrome where possible for cleaner snapshots.
- * - Returns a PNG even on failure by painting an error canvas (lets Python treat all image responses as "success body" vs raw 404 HTML).
+ * GET  /healthz
+ * GET  /start-browser
+ * GET  /pairs                -> JSON list of instruments by category
+ * GET  /snapshot/:pair       -> PNG (default) OR JSON if fmt=json or candles=1
+ * GET  /analyze/:pair        -> JSON TA + (optional) image w/ ?img=1
+ * GET  /run                  -> Legacy interface (exchange,ticker,interval,theme)
  *
  * Notes
  * -----
- * • For reliability on Render, use headless mode & keep viewport modest (1280x720).
- * • TradingView occasionally gatekeeps. You may need to login; stub included (loginTradingView()).
- * • If you need cookies/session injection, see TODO near login stub.
- *
- * License: MIT
- * Author: ChatGPT assist w/ user collaboration
+ * - pair format: "FX:EURUSD", "EURUSD", "NASDAQ:AAPL", "BINANCE:BTCUSDT".
+ * - timeframe param: `tf` (minutes) or TradingView tokens (1,5,15,60,D,W,M).
+ * - theme param: "dark" | "light".
+ * - PNG >2KB enforced (retry).
+ * - Candle JSON is *demo stub* unless you wire a real data provider (see TODO).
  */
 
-"use strict";
-
-/* ------------------------------------------------------------------ */
-/* Imports                                                            */
-/* ------------------------------------------------------------------ */
+const express = require("express");
+const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
-const express = require("express");
-const bodyParser = require("body-parser");
-const { createCanvas } = require("canvas");
-const puppeteer = require("puppeteer"); // full (not -core) installed per user
-const crypto = require("crypto");
+const fetch = require("node-fetch"); // v2
+const puppeteer = require("puppeteer");
 
-/* ------------------------------------------------------------------ */
-/* Config / Env                                                       */
-/* ------------------------------------------------------------------ */
-const PORT              = parseInt(process.env.PORT || "10000", 10);
-const HEADLESS          = (process.env.HEADLESS ?? "true").toLowerCase() !== "false";
-const PUPPETEER_EXEC    = process.env.PUPPETEER_EXEC_PATH || null;
-const DEFAULT_THEME     = (process.env.DEFAULT_THEME || "dark").toLowerCase();
-const DEFAULT_TF        = process.env.DEFAULT_TF || "1";
-const DEBUG_HTML        = (process.env.DEBUG_HTML || "").toLowerCase() === "1";
-const BROWSER_IDLE_SEC  = parseInt(process.env.BROWSER_IDLE_SEC || "300", 10); // auto close after idle
-const NAV_TIMEOUT_MS    = parseInt(process.env.NAV_TIMEOUT_MS || "60000", 10);
-const SCREENSHOT_QUALITY = parseInt(process.env.SCREENSHOT_QUALITY || "80", 10); // not used for png
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+const PORT = Number(process.env.SNAPSHOT_PORT || process.env.PORT || 10000);
+const MIN_PNG_SIZE = 2048;            // 2KB
+const PNG_RETRIES = 3;
+const PNG_RETRY_DELAY_MS = 3500;
 
-/* ------------------------------------------------------------------ */
-/* Simple logging helper                                              */
-/* ------------------------------------------------------------------ */
+const DEFAULT_TF = String(process.env.DEFAULT_INTERVAL || "1");
+const DEFAULT_THEME = (process.env.DEFAULT_THEME || "dark").toLowerCase().startsWith("l") ? "light" : "dark";
+const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*"; // CORS
+const DEBUG_SAVE = !!process.env.DEBUG_SAVE;          // save PNGs to /cache for debugging
+
+// ---------------------------------------------------------------------------
+// Data: Instrument Lists (should mirror Python bot; update there too)
+// ---------------------------------------------------------------------------
+const FX_PAIRS = [
+  "FX:EURUSD","FX:GBPUSD","FX:USDJPY","FX:USDCHF","FX:AUDUSD",
+  "FX:NZDUSD","FX:USDCAD","FX:EURGBP","FX:EURJPY","FX:GBPJPY",
+  "FX:AUDJPY","FX:NZDJPY","FX:EURAUD","FX:GBPAUD","FX:EURCAD",
+  "FX:USDMXN","FX:USDTRY","FX:USDZAR","FX:AUDCHF","FX:EURCHF",
+];
+
+const OTC_PAIRS = [
+  "QUOTEX:EURUSD","QUOTEX:GBPUSD","QUOTEX:USDJPY","QUOTEX:USDCHF","QUOTEX:AUDUSD",
+  "QUOTEX:NZDUSD","QUOTEX:USDCAD","QUOTEX:EURGBP","QUOTEX:EURJPY","QUOTEX:GBPJPY",
+  "QUOTEX:AUDCHF","QUOTEX:EURCHF","QUOTEX:USDKES","QUOTEX:USDMAD","QUOTEX:USDBDT",
+  "QUOTEX:USDMXN","QUOTEX:USDMYR","QUOTEX:USDPKR",
+];
+
+const INDEX_SYMBOLS = [
+  "TVC:US30", "TVC:SPX", "TVC:NSDQ", "TVC:UKX", "TVC:DAX", "TVC:NI225", "TVC:HSI",
+];
+
+const CRYPTO_SYMBOLS = [
+  "BINANCE:BTCUSDT", "BINANCE:ETHUSDT", "BINANCE:XRPUSDT",
+  "BINANCE:SOLUSDT", "BINANCE:DOGEUSDT", "BINANCE:ADAUSDT",
+];
+
+const ALL_PAIRS = [
+  ...FX_PAIRS,
+  ...OTC_PAIRS,
+  ...INDEX_SYMBOLS,
+  ...CRYPTO_SYMBOLS,
+];
+
+// ---------------------------------------------------------------------------
+// Express Setup
+// ---------------------------------------------------------------------------
+const app = express();
+app.use(express.json({ limit: "1mb" }));
+app.use(cors({ origin: ALLOW_ORIGIN }));
+
+// debug cache dir
+const CACHE_DIR = path.join(__dirname, "cache");
+if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+// ---------------------------------------------------------------------------
+// Puppeteer Life‑Cycle
+// ---------------------------------------------------------------------------
+let browser = null;
+let launchPromise = null;
+
+async function launchBrowser() {
+  if (browser) return browser;
+  if (launchPromise) return launchPromise;
+
+  launchPromise = (async () => {
+    try {
+      browser = await puppeteer.launch({
+        headless: "new",
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--single-process",
+        ],
+        defaultViewport: { width: 1280, height: 720 },
+      });
+      console.log(`[${ts()}] ✅ Puppeteer launched.`);
+      return browser;
+    } catch (err) {
+      console.error(`[${ts()}] ❌ Puppeteer launch failed:`, err);
+      browser = null;
+      throw err;
+    } finally {
+      launchPromise = null;
+    }
+  })();
+
+  return launchPromise;
+}
+
+async function withPage(cb) {
+  const b = await launchBrowser();
+  const page = await b.newPage();
+  try {
+    return await cb(page);
+  } finally {
+    try { await page.close(); } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: Time, Sleep, Logging, File Save
+// ---------------------------------------------------------------------------
 function ts() {
   return new Date().toISOString();
 }
-function logInfo(...args)  { console.log(`[${ts()}]`, ...args); }
-function logWarn(...args)  { console.warn(`[${ts()}]`, ...args); }
-function logError(...args) { console.error(`[${ts()}]`, ...args); }
 
-/* Avoid logging binary junk */
-function snip(str, max = 200) {
-  if (str == null) return "";
-  str = String(str);
-  return str.length > max ? str.slice(0, max) + "...(trunc)" : str;
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-/* ------------------------------------------------------------------ */
-/* Global Puppeteer browser mgmt                                      */
-/* ------------------------------------------------------------------ */
-let gBrowser = null;
-let gBrowserLaunchPromise = null;
-let gLastBrowserUse = 0;
-
-async function launchBrowser() {
-  if (gBrowser) {
-    gLastBrowserUse = Date.now();
-    return gBrowser;
-  }
-  if (gBrowserLaunchPromise) {
-    return gBrowserLaunchPromise;
-  }
-  gBrowserLaunchPromise = (async () => {
-    logInfo(`Launching Puppeteer (headless=${HEADLESS})...`);
-    const launchOpts = {
-      headless: HEADLESS ? "new" : false,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-features=site-per-process",
-        "--no-zygote",
-        "--single-process",
-      ],
-    };
-    if (PUPPETEER_EXEC) {
-      launchOpts.executablePath = PUPPETEER_EXEC;
-    }
-    try {
-      const browser = await puppeteer.launch(launchOpts);
-      gBrowser = browser;
-      gLastBrowserUse = Date.now();
-      logInfo("✅ Puppeteer launched.");
-      browser.on("disconnected", () => {
-        logWarn("Browser disconnected.");
-        gBrowser = null;
-      });
-      return browser;
-    } catch (err) {
-      logError("❌ Puppeteer launch failed:", err);
-      gBrowserLaunchPromise = null;
-      throw err;
-    }
-  })();
-  return gBrowserLaunchPromise;
+function safeFilename(name) {
+  return name.replace(/[^-_.A-Za-z0-9]/g, "_");
 }
 
-async function ensureBrowser() {
-  if (!gBrowser) {
-    await launchBrowser();
+function debugSavePNG(buffer, prefix) {
+  if (!DEBUG_SAVE) return;
+  try {
+    const fname = path.join(CACHE_DIR, `${prefix}_${Date.now()}.png`);
+    fs.writeFileSync(fname, buffer);
+    console.log(`[${ts()}] Saved debug PNG -> ${fname} (${buffer.length} bytes)`);
+  } catch (err) {
+    console.warn(`[${ts()}] debugSavePNG error:`, err);
   }
-  gLastBrowserUse = Date.now();
-  return gBrowser;
 }
 
-async function closeBrowser() {
-  if (gBrowser) {
-    try { await gBrowser.close(); }
-    catch (err) { logWarn("Error closing browser:", err); }
-  }
-  gBrowser = null;
-  gBrowserLaunchPromise = null;
-}
-
-/* background auto-close if idle */
-setInterval(() => {
-  if (!gBrowser) return;
-  const idle = (Date.now() - gLastBrowserUse) / 1000;
-  if (idle > BROWSER_IDLE_SEC) {
-    logInfo(`Browser idle ${idle.toFixed(0)}s > ${BROWSER_IDLE_SEC}s; closing.`);
-    closeBrowser().catch(() => {});
-  }
-}, 60 * 1000);
-
-/* ------------------------------------------------------------------ */
-/* Express app setup                                                  */
-/* ------------------------------------------------------------------ */
-const app = express();
-app.use(bodyParser.json({ limit: "1mb" }));
-app.use(bodyParser.urlencoded({ extended: true }));
-
-/* ------------------------------------------------------------------ */
-/* Symbol resolution                                                   */
-/* ------------------------------------------------------------------ */
-/**
- * Try to produce an ordered list of TradingView symbol candidates from
- * incoming request pieces. Returns array of strings like "FX:EURUSD".
- *
- * Accepts:
- *   ex, tk from query, or
- *   rawPair like "EUR/USD-OTC" or "FX:EURUSD".
- */
-function resolveSymbolCandidates({ ex, tk, rawPair }) {
-  const out = [];
-  const r = (s) => s && !out.includes(s) && out.push(s);
-
-  function cleanPair(p) {
-    return p.replace(/[\s/:-]/g, "").toUpperCase();
-  }
-
-  // 1. If ex:tk explicit
-  if (ex && tk) {
-    r(`${ex.toUpperCase()}:${tk.toUpperCase()}`);
-  }
-
-  // 2. If rawPair colon format
-  if (rawPair && rawPair.includes(":")) {
-    r(rawPair.toUpperCase());
-  }
-
-  // 3. Clean label -> canonical tk
-  let label = rawPair;
-  if (label) {
-    label = label.trim();
-    const isOTC = /-OTC$/i.test(label);
-    const canon = cleanPair(label);
-    // known underlying for OTC
-    const otcMap = {
-      "EURUSDOTC": "EURUSD",
-      "GBPUSDOTC": "GBPUSD",
-      "USDJPYOTC": "USDJPY",
-      "USDCHFOTC": "USDCHF",
-      "AUDUSDOTC": "AUDUSD",
-      "NZDUSDOTC": "NZDUSD",
-      "USDCADOTC": "USDCAD",
-      "EURGBPOTC": "EURGBP",
-      "EURJPYOTC": "EURJPY",
-      "GBPJPYOTC": "GBPJPY",
-      "AUDCHFOTC": "AUDCHF",
-      "EURCHFOTC": "EURCHF",
-      "USDKESOTC": "USDKES",
-      "USDMADOTC": "USDMAD",
-      "USDBDTOTC": "USDBDT",
-      "USDMXNOTC": "USDMXN",
-      "USDMYROTC": "USDMYR",
-      "USDPKROTC": "USDPKR",
-    };
-    const idxMap = {
-      "US30": "DJI",
-      "SPX500": "SPX",
-      "NAS100": "NDX",
-      "DE40": "DAX",
-      "UK100": "UKX",
-      "JP225": "NI225",
-      "FR40": "CAC40",
-      "ES35": "IBEX35",
-      "HK50": "HSI",
-      "AU200": "AS51",
-    };
-    const cryMap = {
-      "BTCUSD": "BTCUSD",
-      "ETHUSD": "ETHUSD",
-      "SOLUSD": "SOLUSD",
-      "XRPUSD": "XRPUSD",
-      "LTCUSD": "LTCUSD",
-      "ADAUSD": "ADAUSD",
-      "DOGEUSD": "DOGEUSD",
-      "BNBUSD": "BNBUSD",
-      "DOTUSD": "DOTUSD",
-      "LINKUSD": "LINKUSD",
-    };
-
-    let baseTk = canon;
-    // remove trailing OTC for underlying map
-    if (isOTC && otcMap[canon]) {
-      baseTk = otcMap[canon];
-    }
-
-    // index override
-    if (idxMap[canon]) {
-      baseTk = idxMap[canon];
-    }
-
-    // crypto override
-    if (cryMap[canon]) {
-      baseTk = cryMap[canon];
-    }
-
-    // try multiple exchanges
-    const tryEx = [
-      ex ? ex.toUpperCase() : null,
-      "FX",
-      "FX_IDC",
-      "OANDA",
-      "FOREXCOM",
-      "IDC",
-      "QUOTEX",
-      "CURRENCY",
-      "INDEX",
-      "BINANCE",
-      "CRYPTO",
-    ].filter(Boolean);
-
-    for (const e of tryEx) {
-      r(`${e}:${baseTk}`);
-    }
-
-    // also plain base? Some internal servers parse w/out exchange
-    r(baseTk);
-  }
-
-  // final dedup is done by `out` push rules
-  return out;
-}
-
-/* ------------------------------------------------------------------ */
-/* Timeframe normalization                                            */
-/* ------------------------------------------------------------------ */
-function normInterval(tf) {
+// ---------------------------------------------------------------------------
+// Normalize input
+// ---------------------------------------------------------------------------
+function normTF(tf) {
   if (!tf) return DEFAULT_TF;
   const t = String(tf).trim().toLowerCase();
-  if (/^\d+$/.test(t)) return t;         // minutes
+  if (/^\d+$/.test(t)) return t;
   if (t === "d" || t === "1d" || t === "day") return "D";
   if (t === "w" || t === "1w" || t === "week") return "W";
-  if (t === "m" || t === "1mth" || t === "mo" || t === "month") return "M";
-  // match "5m" etc
-  const m = t.match(/^(\d+)m$/);
-  if (m) return m[1];
+  if (t === "m" || t === "mo" || t === "1mth" || t === "month") return "M";
   return DEFAULT_TF;
 }
 
-function normTheme(th) {
-  if (!th) return DEFAULT_THEME;
-  return th.toLowerCase().startsWith("l") ? "light" : "dark";
+function normTheme(theme) {
+  if (!theme) return DEFAULT_THEME;
+  return theme.toLowerCase().startsWith("l") ? "light" : "dark";
 }
 
-/* ------------------------------------------------------------------ */
-/* TradingView chart navigation                                       */
-/* ------------------------------------------------------------------ */
-/**
- * Build a TradingView full chart URL for a given symbol.
- * We deliberately include interval & theme as query args.
- */
-function buildTVUrl(symbol, interval, theme) {
-  // We use the standard /chart/ full-featured chart page; you can switch to embed if needed.
-  // hide top toolbar & legend isn't officially supported via /chart? but we can try query hints
-  // We'll also strip UI elements via page.evaluate() after load.
-  const params = new URLSearchParams({
-    symbol,
-    interval,
-    theme,
-    style: "1",
-    locale: "en",
-  });
-  return `https://www.tradingview.com/chart/?${params.toString()}`;
+// Accept user pair like "EUR/USD", "FX:EURUSD", "eurusd", etc.
+function normPair(input) {
+  if (!input) return "FX:EURUSD";
+  let s = String(input).trim().toUpperCase();
+  s = s.replace(/\s+/g, "");
+  // Add default prefix if missing
+  if (!s.includes(":")) {
+    // guess if includes slash e.g. EUR/USD
+    s = s.replace("/", "");
+    s = `FX:${s}`;
+  }
+  return s;
 }
 
-/**
- * Attempt to hide TradingView UI clutter once page loaded.
- */
-async function hideTradingViewUi(page) {
-  try {
-    await page.evaluate(() => {
-      const hideCss = `
-        .chart-controls-bar, .layout__area--top, .tv-header__wrap, [data-name="header-toolbar"], .sidebar-container {
-          display:none !important;
-        }
-        .chart-markup-table, .chart-logo, .tv-logo, .chart-page, .tv-pane-tools {
-          opacity:0 !important;
-        }
-      `;
-      const style = document.createElement("style");
-      style.setAttribute("id", "tvhidecss");
-      style.innerHTML = hideCss;
-      document.head.appendChild(style);
+// ---------------------------------------------------------------------------
+// TradingView Snapshot Capture (core)
+// ---------------------------------------------------------------------------
+async function captureTradingViewChart(pair, tf, theme) {
+  const url = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(pair)}&interval=${encodeURIComponent(tf)}&theme=${encodeURIComponent(theme)}`;
+  console.log(`[${ts()}] Opening TradingView URL: ${url}`);
+
+  return withPage(async (page) => {
+    // speed/permissions
+    await page.setBypassCSP(true);
+    await page.setJavaScriptEnabled(true);
+    await page.setRequestInterception(true);
+
+    page.on("request", (req) => {
+      // allow essential
+      const type = req.resourceType();
+      if (["image", "stylesheet", "script", "document", "xhr", "fetch"].includes(type)) {
+        req.continue();
+      } else {
+        req.abort();
+      }
     });
-  } catch (_) {
-    /* ignore */
-  }
-}
 
-/**
- * Attempt to locate the main chart canvas bounding box.
- * Returns clip obj or null for full screenshot.
- */
-async function getChartClip(page) {
-  try {
-    const selCandidates = [
-      '.chart-container',                // embedded
-      '.chart-markup-table',             // deep internals
-      '.tv-chart-view__overlay',         // overlay region
-      '.chart-gui-wrapper',              // general wrapper
-      '[data-name="chart-container"]',
-    ];
-    for (const sel of selCandidates) {
-      const el = await page.$(sel);
-      if (el) {
-        const box = await el.boundingBox();
-        if (box && box.width > 100 && box.height > 100) {
-          return box;
-        }
-      }
-    }
-  } catch (err) {
-    logWarn("getChartClip error:", err);
-  }
-  return null;
-}
+    // nav
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 90000 });
 
-/**
- * Core capture routine: open candidate TradingView symbols and screenshot.
- * Returns { ok:boolean, png:Buffer|null, usedSymbol, error }
- */
-async function captureTradingViewChart({
-  symbolCandidates,
-  interval,
-  theme,
-  width = 1280,
-  height = 720,
-  clipChart = false,
-  navTimeout = NAV_TIMEOUT_MS,
-}) {
-  const browser = await ensureBrowser();
-
-  // Serial access queue: we open one page at a time
-  const page = await browser.newPage();
-  try {
-    await page.setViewport({ width, height, deviceScaleFactor: 1 });
-  } catch (e0) {
-    logWarn("setViewport error:", e0);
-  }
-
-  let lastErr = "no_attempts";
-
-  for (const sym of symbolCandidates) {
-    const url = buildTVUrl(sym, interval, theme);
-    logInfo("Opening TradingView:", url);
+    // Wait some DOM hints (chart container). Best‑effort.
     try {
-      await page.goto(url, { waitUntil: "networkidle2", timeout: navTimeout });
-    } catch (navErr) {
-      logWarn(`Nav error for ${sym}:`, navErr.message);
-      lastErr = navErr.message;
-      continue;
-    }
+      await page.waitForSelector("div[data-name='legend-series-item']", { timeout: 15000 });
+    } catch (_) {}
 
-    // Give chart time to bootstrap (panes load lazy)
+    // Hide UI overlays to shrink noise
     try {
-      await page.waitForSelector('canvas', { timeout: 15000 });
-    } catch {
-      logWarn(`Canvas not found for ${sym} (continuing)`);
-    }
-
-    await hideTradingViewUi(page);
-
-    // Chart clip?
-    let clip = null;
-    if (clipChart) {
-      clip = await getChartClip(page);
-      if (!clip) {
-        logWarn("Chart clip not found; using full page.");
-      }
-    }
-
-    // screenshot
-    try {
-      const png = await page.screenshot({
-        type: "png",
-        fullPage: !clip,
-        clip: clip || undefined,
+      await page.evaluate(() => {
+        const hideSel = [
+          "[data-name='left-toolbar']",
+          "[data-name='header-toolbar-symbol-search']",
+          "[data-name='header-toolbar-intervals']",
+          "[data-name='header-toolbar-style']",
+          "[data-name='header-toolbar-save-load']",
+          "[data-name='header-toolbar-properties']",
+          "[data-name='header-toolbar-fullscreen-button']",
+          ".layout__area--left",
+          ".layout__area--right",
+        ];
+        hideSel.forEach((sel) => {
+          document.querySelectorAll(sel).forEach((el) => (el.style.display = "none"));
+        });
+        // shrink margins
+        document.body.style.margin = "0";
+        document.body.style.padding = "0";
       });
-      logInfo(`✅ Captured ${sym} (${png.length} bytes)`);
-      await page.close();
-      return { ok: true, png, usedSymbol: sym, error: "" };
-    } catch (shotErr) {
-      logWarn(`Screenshot error for ${sym}:`, shotErr);
-      lastErr = shotErr.message;
-      continue;
+    } catch (_) {}
+
+    // screenshot bounding box (chart area)
+    let clipRect = null;
+    try {
+      clipRect = await page.evaluate(() => {
+        const el = document.querySelector("div[data-name='chart-area']") ||
+                   document.querySelector(".chart-container") ||
+                   document.querySelector("tv-chart-view") ||
+                   document.body;
+        const r = el.getBoundingClientRect();
+        return { x: Math.max(0, r.x), y: Math.max(0, r.y), width: r.width, height: r.height };
+      });
+      // ensure minimum dims
+      if (!clipRect || clipRect.width < 200 || clipRect.height < 200) {
+        clipRect = { x: 0, y: 0, width: 1280, height: 720 };
+      }
+    } catch (_) {
+      clipRect = { x: 0, y: 0, width: 1280, height: 720 };
     }
+
+    const buf = await page.screenshot({ type: "png", clip: clipRect });
+    return buf;
+  });
+}
+
+// Wrapper w/ multi retry + size guarantee
+async function getTradingViewSnapshot(pair, tf = DEFAULT_TF, theme = DEFAULT_THEME) {
+  let lastErr = null;
+  for (let i = 1; i <= PNG_RETRIES; i++) {
+    try {
+      const png = await captureTradingViewChart(pair, tf, theme);
+      if (png && png.length >= MIN_PNG_SIZE) {
+        debugSavePNG(png, `snap_${safeFilename(pair)}_${tf}_${theme}`);
+        return png;
+      }
+      lastErr = `PNG too small (${png ? png.length : 0} bytes)`;
+      console.warn(`[${ts()}] Snapshot attempt ${i} small -> retry…`);
+    } catch (err) {
+      lastErr = err.message || String(err);
+      console.warn(`[${ts()}] Snapshot attempt ${i} failed: ${lastErr}`);
+    }
+    if (i < PNG_RETRIES) await sleep(PNG_RETRY_DELAY_MS);
+  }
+  throw new Error(lastErr || "snapshot failed");
+}
+
+// ---------------------------------------------------------------------------
+// Candle Data (stub & optional remote feed)
+// ---------------------------------------------------------------------------
+
+// TODO: Replace stub with real provider: Polygon, TwelveData, Tiingo, AlphaVantage, TradingView unofficial.
+async function getCandlesJSON(pair, tf = DEFAULT_TF, limit = 50) {
+  // stub: random OHLC near 1.0 for FX; near 100 for indices.
+  const scale = pair.includes("BTC") || pair.includes("ETH") ? 1000 : pair.includes("US30") ? 50000 : 1;
+  const candles = [];
+  let last = scale;
+  for (let i = 0; i < limit; i++) {
+    const open = last;
+    const chg = (Math.random() - 0.5) * scale * 0.001;
+    const close = open + chg;
+    const high = Math.max(open, close) + Math.random() * scale * 0.0005;
+    const low = Math.min(open, close) - Math.random() * scale * 0.0005;
+    const vol = Math.floor(Math.random() * 1000);
+    candles.unshift({
+      time: Date.now() - (limit - i) * 60 * 1000,
+      open, high, low, close, volume: vol,
+    });
+    last = close;
+  }
+  return {
+    source: "server.js",
+    ts: Date.now(),
+    pair,
+    tf,
+    candles,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight TA (for /analyze & Python bot)
+// ---------------------------------------------------------------------------
+
+// simple EMA
+function ema(values, length) {
+  if (!values.length) return [];
+  const k = 2 / (length + 1);
+  let prev = values[0];
+  const out = [prev];
+  for (let i = 1; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    out.push(prev);
+  }
+  // align to last N
+  return out.map((v) => v);
+}
+
+// RSI simplified (Wilder style approx)
+function rsi(values, length = 14) {
+  if (values.length < 2) return Array(values.length).fill(50);
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= length && i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    if (diff >= 0) gains += diff; else losses -= diff;
+  }
+  gains /= length;
+  losses /= length;
+  const arr = [];
+  let rs = losses === 0 ? 0 : gains / losses;
+  arr[length] = 100 - 100 / (1 + rs);
+  let avgGain = gains, avgLoss = losses;
+  for (let i = length + 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (length - 1) + gain) / length;
+    avgLoss = (avgLoss * (length - 1) + loss) / length;
+    rs = avgLoss === 0 ? 0 : avgGain / avgLoss;
+    arr[i] = 100 - 100 / (1 + rs);
+  }
+  // fill head
+  for (let i = 0; i < length; i++) arr[i] = arr[length];
+  return arr;
+}
+
+// ATR (high-low true range only approx)
+function atr(candles, length = 14) {
+  if (!candles.length) return [];
+  const trs = [];
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    const tr = c.high - c.low;
+    trs.push(tr);
+  }
+  // Wilder smoothing rough
+  let acc = 0;
+  for (let i = 0; i < length && i < trs.length; i++) acc += trs[i];
+  const out = [];
+  let prev = acc / length;
+  out[length - 1] = prev;
+  for (let i = length; i < trs.length; i++) {
+    prev = (prev * (length - 1) + trs[i]) / length;
+    out[i] = prev;
+  }
+  for (let i = 0; i < length - 1; i++) out[i] = out[length - 1];
+  return out;
+}
+
+// generate quick TA summary + signal
+function analyzeCandles(candles, opts = {}) {
+  const fastLen = opts.fastLen || 7;
+  const slowLen = opts.slowLen || 25;
+  const rsiLen = opts.rsiLen || 14;
+  const atrLen = opts.atrLen || 14;
+
+  const closes = candles.map((c) => c.close);
+  const highs = candles.map((c) => c.high);
+  const lows = candles.map((c) => c.low);
+
+  const emaFast = ema(closes, fastLen);
+  const emaSlow = ema(closes, slowLen);
+  const rsiArr = rsi(closes, rsiLen);
+  const atrArr = atr(candles, atrLen);
+
+  const lastIdx = closes.length - 1;
+  const lastClose = closes[lastIdx];
+  const lastEmaFast = emaFast[lastIdx];
+  const lastEmaSlow = emaSlow[lastIdx];
+  const lastRSI = rsiArr[lastIdx];
+  const lastATR = atrArr[lastIdx];
+
+  // direction heuristics
+  let direction = "NEUTRAL";
+  let confidence = 50;
+
+  if (lastEmaFast > lastEmaSlow) {
+    direction = "CALL";
+    confidence += 15;
+  } else if (lastEmaFast < lastEmaSlow) {
+    direction = "PUT";
+    confidence += 15;
   }
 
-  try { await page.close(); } catch (_) {}
-  return { ok: false, png: null, usedSymbol: null, error: lastErr };
-}
-
-/* ------------------------------------------------------------------ */
-/* Error PNG generation                                               */
-/* ------------------------------------------------------------------ */
-function makeErrorPng(msg, width = 800, height = 400) {
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "#f00";
-  ctx.font = "20px sans-serif";
-  ctx.fillText("Snapshot Error", 20, 40);
-  ctx.fillStyle = "#fff";
-  wrapText(ctx, msg, 20, 80, width - 40, 22);
-  return canvas.toBuffer("image/png");
-}
-
-function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
-  const words = text.split(/\s+/);
-  let line = "";
-  for (const w of words) {
-    const tw = line ? line + " " + w : w;
-    const m = ctx.measureText(tw).width;
-    if (m > maxWidth) {
-      ctx.fillText(line, x, y);
-      line = w;
-      y += lineHeight;
+  if (lastRSI <= 30) {
+    // oversold → call bias
+    if (direction === "PUT") {
+      direction = "NEUTRAL";
+      confidence -= 10;
     } else {
-      line = tw;
+      direction = "CALL";
+      confidence += 10;
+    }
+  } else if (lastRSI >= 70) {
+    // overbought → put bias
+    if (direction === "CALL") {
+      direction = "NEUTRAL";
+      confidence -= 10;
+    } else {
+      direction = "PUT";
+      confidence += 10;
     }
   }
-  if (line) ctx.fillText(line, x, y);
+
+  // last candle body direction
+  const lastC = candles[lastIdx];
+  if (lastC.close > lastC.open) {
+    if (direction === "PUT") confidence -= 5; else confidence += 3;
+  } else if (lastC.close < lastC.open) {
+    if (direction === "CALL") confidence -= 5; else confidence += 3;
+  }
+
+  // clamp
+  if (confidence < 1) confidence = 1;
+  if (confidence > 99) confidence = 99;
+
+  // expiry suggestions (rough: ATR scaling)
+  const tickRange = lastATR || (lastC.high - lastC.low);
+  let baseMin = 1;
+  if (tickRange > 0) {
+    // bigger volatility → longer expiry
+    if (tickRange > Math.abs(lastClose) * 0.002) baseMin = 5;
+    else if (tickRange > Math.abs(lastClose) * 0.001) baseMin = 3;
+    else baseMin = 1;
+  }
+  const expiries = [baseMin, baseMin + 2, baseMin + 4, 15].map((m) => `${m}m`);
+
+  return {
+    indicators: {
+      emaFast: lastEmaFast,
+      emaSlow: lastEmaSlow,
+      rsi: lastRSI,
+      atr: lastATR,
+    },
+    signal: {
+      direction,
+      confidence,
+      expiries,
+    },
+  };
 }
 
-/* ------------------------------------------------------------------ */
-/* Health                                                             */
-/* ------------------------------------------------------------------ */
+// ---------------------------------------------------------------------------
+// Endpoint: /healthz
+// ---------------------------------------------------------------------------
 app.get("/healthz", (req, res) => {
-  res.json({ ok: true, browser: !!gBrowser });
+  res.json({
+    status: "ok",
+    browser: !!browser,
+    ts: Date.now(),
+  });
 });
 
-/* ------------------------------------------------------------------ */
-/* Start Browser                                                       */
-/* ------------------------------------------------------------------ */
+// ---------------------------------------------------------------------------
+// Endpoint: /start-browser (manual spin‑up)
+// ---------------------------------------------------------------------------
 app.get("/start-browser", async (req, res) => {
   try {
-    await ensureBrowser();
-    res.json({ ok: true, browser: true });
+    await launchBrowser();
+    res.json({ status: "browser ready", ts: Date.now() });
   } catch (err) {
-    res.status(500).json({ ok: false, error: String(err) });
+    res.status(500).json({ error: "launch failed", details: err.message });
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Close Browser (debug)                                               */
-/* ------------------------------------------------------------------ */
-app.get("/close-browser", async (req, res) => {
-  await closeBrowser();
-  res.json({ ok: true, closed: true });
+// ---------------------------------------------------------------------------
+// Endpoint: /pairs  (category lists)
+//   ?cat=fx|otc|indices|crypto|all
+// ---------------------------------------------------------------------------
+app.get("/pairs", (req, res) => {
+  const cat = String(req.query.cat || "all").toLowerCase();
+  let list;
+  switch (cat) {
+    case "fx": list = FX_PAIRS; break;
+    case "otc": list = OTC_PAIRS; break;
+    case "indices": list = INDEX_SYMBOLS; break;
+    case "crypto": list = CRYPTO_SYMBOLS; break;
+    default: list = ALL_PAIRS; break;
+  }
+  res.json({
+    source: "server.js",
+    ts: Date.now(),
+    category: cat,
+    count: list.length,
+    pairs: list,
+  });
 });
 
-/* ------------------------------------------------------------------ */
-/* Metrics (minimal)                                                   */
-/* ------------------------------------------------------------------ */
-let gMetricsTotal = 0;
-let gMetricsHitCache = 0; // placeholder (no caching yet)
-app.get("/metrics", (req, res) => {
-  res.type("text/plain").send([
-    `snapshot_total ${gMetricsTotal}`,
-    `snapshot_cache_hits ${gMetricsHitCache}`,
-    `browser_up ${gBrowser ? 1 : 0}`,
-  ].join("\n"));
-});
+// ---------------------------------------------------------------------------
+// Endpoint: /snapshot/:pair
+//   -> PNG (default) or JSON (fmt=json || candles=1)
+// ---------------------------------------------------------------------------
+app.get("/snapshot/:pair", async (req, res) => {
+  const pairRaw = req.params.pair;
+  const { tf = DEFAULT_TF, theme = DEFAULT_THEME, fmt, candles, limit } = req.query;
+  const pair = normPair(pairRaw);
+  const nTF = normTF(tf);
+  const nTheme = normTheme(theme);
 
-/* ------------------------------------------------------------------ */
-/* Snapshot Handling                                                   */
-/* ------------------------------------------------------------------ */
-/**
- * Shared snapshot worker: given symbol candidates (array of strings),
- * attempts capture and responds image/png; else error PNG.
- */
-async function doSnapshotRes(req, res, symbolCandidates, interval, theme, width, height, clipChart) {
-  gMetricsTotal += 1;
   try {
-    const { ok, png, usedSymbol, error } = await captureTradingViewChart({
-      symbolCandidates,
-      interval,
-      theme,
-      width,
-      height,
-      clipChart,
-    });
-
-    if (ok && png) {
-      res.set("Content-Type", "image/png");
-      if (usedSymbol) res.set("X-TV-Symbol", usedSymbol);
-      res.status(200).send(png);
-      return;
+    if (fmt === "json" || candles === "1") {
+      const data = await getCandlesJSON(pair, nTF, Number(limit) || 50);
+      return res.json(data);
     }
 
-    const errMsg = `All symbol attempts failed. Last error: ${error || "unknown"}`;
-    logWarn(errMsg, symbolCandidates);
-    const pngErr = makeErrorPng(errMsg);
-    res.set("Content-Type", "image/png");
-    res.status(500).send(pngErr);
+    const png = await getTradingViewSnapshot(pair, nTF, nTheme);
+    res.setHeader("Content-Type", "image/png");
+    res.send(png);
   } catch (err) {
-    const errMsg = `Snapshot exception: ${err}`;
-    logError(errMsg);
-    const pngErr = makeErrorPng(errMsg);
-    res.set("Content-Type", "image/png");
-    res.status(500).send(pngErr);
+    console.error(`[${ts()}] Snapshot error (${pair}):`, err);
+    res.status(500).json({ error: "snapshot failed", details: err.message });
   }
-}
-
-/* ------------------------------------------------------------------ */
-/* /snapshot/:pair                                                     */
-/* ------------------------------------------------------------------ */
-app.get("/snapshot/:pair", async (req, res) => {
-  const rawPair = req.params.pair; // may include colon e.g., FX:EURUSD
-  const interval = normInterval(req.query.tf || req.query.interval || DEFAULT_TF);
-  const theme    = normTheme(req.query.theme || DEFAULT_THEME);
-  const width    = parseInt(req.query.w || "1280", 10);
-  const height   = parseInt(req.query.h || "720", 10);
-  const clipChart = !!req.query.clip;
-
-  const symbolCandidates = resolveSymbolCandidates({ ex: null, tk: null, rawPair });
-  if (!symbolCandidates.length) {
-    const pngErr = makeErrorPng("No symbol candidates derived from pair param.");
-    res.set("Content-Type", "image/png");
-    return res.status(400).send(pngErr);
-  }
-  await doSnapshotRes(req, res, symbolCandidates, interval, theme, width, height, clipChart);
 });
 
-/* ------------------------------------------------------------------ */
-/* /run (legacy compat)                                                */
-/* ------------------------------------------------------------------ */
+// ---------------------------------------------------------------------------
+// Endpoint: /analyze/:pair
+//   -> JSON TA; if ?img=1 also return base64 png
+//   query: tf, theme, limit
+// ---------------------------------------------------------------------------
+app.get("/analyze/:pair", async (req, res) => {
+  const pairRaw = req.params.pair;
+  const { tf = DEFAULT_TF, theme = DEFAULT_THEME, limit = 100, img = "0" } = req.query;
+  const pair = normPair(pairRaw);
+  const nTF = normTF(tf);
+  const nTheme = normTheme(theme);
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 10), 1000);
+
+  try {
+    // get candles
+    const data = await getCandlesJSON(pair, nTF, lim);
+    const ta = analyzeCandles(data.candles);
+
+    let imgB64 = null;
+    if (String(img) === "1") {
+      try {
+        const png = await getTradingViewSnapshot(pair, nTF, nTheme);
+        imgB64 = png.toString("base64");
+      } catch (pngErr) {
+        console.warn(`[${ts()}] analyze() snapshot optional image error:`, pngErr);
+      }
+    }
+
+    res.json({
+      source: "server.js",
+      ts: Date.now(),
+      pair,
+      tf: nTF,
+      theme: nTheme,
+      candles: data.candles.length,
+      ...ta,
+      image_b64: imgB64,
+    });
+  } catch (err) {
+    console.error(`[${ts()}] Analyze error (${pair}):`, err);
+    res.status(500).json({ error: "analyze failed", details: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Legacy: /run?exchange=FX&ticker=EURUSD&interval=1&theme=dark
+// ---------------------------------------------------------------------------
 app.get("/run", async (req, res) => {
-  const ex       = req.query.exchange;
-  const tk       = req.query.ticker;
-  const interval = normInterval(req.query.interval || DEFAULT_TF);
-  const theme    = normTheme(req.query.theme || DEFAULT_THEME);
-  const width    = parseInt(req.query.w || "1280", 10);
-  const height   = parseInt(req.query.h || "720", 10);
-  const clipChart = !!req.query.clip;
+  const { exchange = "FX", ticker = "EURUSD", interval = DEFAULT_TF, theme = DEFAULT_THEME } = req.query;
+  const pair = normPair(`${exchange}:${ticker}`);
+  const nTF = normTF(interval);
+  const nTheme = normTheme(theme);
 
-  const rawPair = req.query.pair || `${ex || ""}:${tk || ""}`;
-  const symbolCandidates = resolveSymbolCandidates({ ex, tk, rawPair });
-  if (!symbolCandidates.length) {
-    const pngErr = makeErrorPng("No symbol candidates from /run params.");
-    res.set("Content-Type", "image/png");
-    return res.status(400).send(pngErr);
+  try {
+    const png = await getTradingViewSnapshot(pair, nTF, nTheme);
+    res.setHeader("Content-Type", "image/png");
+    res.send(png);
+  } catch (err) {
+    console.error(`[${ts()}] /run error:`, err);
+    res.status(500).json({ error: "run snapshot failed", details: err.message });
   }
-  await doSnapshotRes(req, res, symbolCandidates, interval, theme, width, height, clipChart);
 });
 
-/* ------------------------------------------------------------------ */
-/* Root                                                                */
-/* ------------------------------------------------------------------ */
-app.get("/", (req, res) => {
-  res.type("text/plain").send("TradingView Snapshot Service is running.\nUse /snapshot/:pair or /run?exchange=FX&ticker=EURUSD&interval=1.");
+// ---------------------------------------------------------------------------
+// Static cache (debug PNG saves, if enabled)
+// ---------------------------------------------------------------------------
+app.use("/cache", express.static(CACHE_DIR));
+
+// ---------------------------------------------------------------------------
+// Start Server
+// ---------------------------------------------------------------------------
+app.listen(PORT, async () => {
+  console.log(`[${ts()}] ✅ TradingView Snapshot Server running on http://localhost:${PORT}`);
+  try {
+    await launchBrowser();
+  } catch (_) {} // ignore
 });
 
-/* ------------------------------------------------------------------ */
-/* Error Handling middleware (last)                                    */
-/* ------------------------------------------------------------------ */
-app.use((err, req, res, next) => {
-  logError("Express error:", err);
-  const pngErr = makeErrorPng(`Express error: ${err}`);
-  res.set("Content-Type", "image/png");
-  res.status(500).send(pngErr);
-});
-
-/* ------------------------------------------------------------------ */
-/* Startup                                                             */
-/* ------------------------------------------------------------------ */
-app.listen(PORT, () => {
-  logInfo(`✅ Snapshot service listening on port ${PORT}`);
-  if (!HEADLESS) {
-    logInfo("NOTE: Headless disabled; a visible Chrome may appear.");
-  }
-  // Optionally auto-launch to warm browser (comment out if you prefer lazy)
-  launchBrowser().catch((err) => {
-    logWarn("Browser launch deferred due to error:", err);
-  });
+// ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
+process.on("SIGINT", async () => {
+  console.log(`[${ts()}] Closing browser…`);
+  try { if (browser) await browser.close(); } catch (_) {}
+  process.exit(0);
 });
