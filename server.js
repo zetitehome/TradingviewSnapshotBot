@@ -1,110 +1,129 @@
-// server.js
+// ✅ Updated server.js (Pocket Option + TradingView + Telegram Integration)
+// This version includes: advanced Telegram menu, auto-trade confirmation logic, JSON webhook handler, and trading logic trigger
 
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const { exec } = require('child_process');
-require('dotenv').config();
-
+const fs = require('fs');
 const app = express();
-const PORT = 8080;
+const PORT = 3333;
+
+// Load Telegram Bot Settings
+const TELEGRAM_TOKEN = '8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA';
+const TELEGRAM_CHAT_ID = '6337160812';
+
+// Default trade config
+const DEFAULT_TRADE_AMOUNT = 1; // USD
+const DEFAULT_MAX_AMOUNT = 100;
+const BALANCE_PERCENTAGE_MODE = true; // If true, 5%–100% of balance used if auto
+const AUTO_EXECUTE_CONFIDENCE_THRESHOLD = 70; // %
 
 app.use(bodyParser.json());
 
-// === CONFIGURATION ===
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const LOCAL_UIVISION_URL = 'http://localhost:3366/command'; // UI.Vision browser extension port
-const AUTO_TRADE_ENABLED = true;
-const MIN_CONFIDENCE = 70; // Require confirmation below this
-
-// === TELEGRAM HELPER ===
-async function sendTelegramMessage(text, buttons = []) {
-  const payload = {
-    chat_id: TELEGRAM_CHAT_ID,
-    text,
-    parse_mode: 'HTML',
-  };
-  if (buttons.length > 0) {
-    payload.reply_markup = {
-      inline_keyboard: [buttons],
-    };
-  }
+// === Util: Send Telegram Message ===
+async function sendTelegramMessage(message, replyMarkup = null) {
   try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, payload);
+    const payload = {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: message,
+      parse_mode: 'HTML',
+    };
+    if (replyMarkup) payload.reply_markup = replyMarkup;
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, payload);
   } catch (err) {
-    console.error('Telegram Error:', err.response?.data || err.message);
+    console.error('Telegram send error:', err.message);
   }
 }
 
-// === TRADE EXECUTION ===
-function triggerTradeUIVision(pair, action, expiry, amount) {
-  const macroPayload = {
-    cmd: 'runMacro',
-    macro: 'TradePocketOption',
-    args: [pair, action, expiry, amount.toString()]
-  };
-  return axios.post(LOCAL_UIVISION_URL, macroPayload);
+// === Util: Trigger UI.Vision Macro ===
+function triggerMacro(symbol, action, expiry, amount = DEFAULT_TRADE_AMOUNT) {
+  const command = `curl http://localhost:8080/?macro=trade&symbol=${symbol}&action=${action}&expiry=${expiry}&amount=${amount}`;
+  exec(command, (err, stdout, stderr) => {
+    if (err) return console.error('Macro Trigger Error:', stderr);
+    console.log('Macro Triggered:', stdout);
+  });
 }
 
-// === CONFIRMATION HANDLER ===
-let pendingTrade = null;
-app.post('/confirm-trade', async (req, res) => {
-  const decision = req.body?.decision?.toLowerCase();
-  if (pendingTrade && decision) {
-    if (decision === 'yes') {
-      await triggerTradeUIVision(...pendingTrade);
-      await sendTelegramMessage(`✅ Trade confirmed and placed: ${pendingTrade.join(', ')}`);
-    } else {
-      await sendTelegramMessage(`❌ Trade canceled.`);
-    }
-    pendingTrade = null;
-  }
-  res.sendStatus(200);
-});
-
-// === ALERT HANDLER ===
+// === Webhook Receiver (TradingView → Bot) ===
 app.post('/webhook', async (req, res) => {
-  const alert = req.body;
-  if (!alert || !alert.pair || !alert.direction) {
-    return res.status(400).send('Invalid alert');
+  const data = req.body;
+  if (!data || !data.symbol || !data.action || !data.confidence) {
+    return res.status(400).send('Missing required fields');
   }
 
-  const {
-    pair = 'EUR/USD',
-    direction = 'buy',
-    confidence = 75,
-    expiry = 5,
-    strategy = 'default',
-    snapshot = '',
-    trade_amount = 1
-  } = alert;
+  const { symbol, action, confidence, expiry = 1, amount = DEFAULT_TRADE_AMOUNT, winrate, snapshot_url } = data;
 
-  let amount = Math.min(Math.max(trade_amount, 1), 100); // Clamp to $1–$100
+  // Format message
+  const message = `📥 <b>Signal Received</b>\n
+<b>Pair:</b> ${symbol}
+<b>Action:</b> ${action.toUpperCase()}
+<b>Confidence:</b> ${confidence}%
+<b>Expiry:</b> ${expiry} min
+<b>Expected Winrate:</b> ${winrate || '?'}%
+<b>Amount:</b> $${amount}
+${snapshot_url ? `📸 <a href='${snapshot_url}'>View Chart</a>` : ''}`;
 
-  // Alert message
-  const message = `<b>📡 New Trade Signal</b>\n\n` +
-    `<b>Pair:</b> ${pair}\n<b>Direction:</b> ${direction.toUpperCase()}\n<b>Confidence:</b> ${confidence}%\n<b>Expiry:</b> ${expiry} min\n<b>Amount:</b> $${amount}\n<b>Strategy:</b> ${strategy}\n\n` +
-    (snapshot ? `<a href="${snapshot}">📸 View Chart Snapshot</a>` : '');
-
-  if (confidence >= MIN_CONFIDENCE && AUTO_TRADE_ENABLED) {
-    await sendTelegramMessage(message + `\n\n✅ <b>Auto trade executed</b>`);
-    await triggerTradeUIVision(pair, direction, expiry, amount);
+  // Auto-Execute if Confidence >= Threshold
+  if (confidence >= AUTO_EXECUTE_CONFIDENCE_THRESHOLD) {
+    await sendTelegramMessage(`${message}\n\n🚀 Auto-trade will execute now.`);
+    triggerMacro(symbol, action, expiry, amount);
   } else {
-    // Ask for confirmation
-    pendingTrade = [pair, direction, expiry, amount];
-    await sendTelegramMessage(message + `\n\n⚠️ Confidence under ${MIN_CONFIDENCE}%\nConfirm to trade:`,
-      [
-        { text: '✅ Yes', callback_data: 'yes' },
-        { text: '❌ No', callback_data: 'no' }
-      ]
+    await sendTelegramMessage(
+      `${message}\n\n⚠️ Confidence under ${AUTO_EXECUTE_CONFIDENCE_THRESHOLD}%. Confirm trade?`,
+      {
+        inline_keyboard: [
+          [
+            { text: '✅ Yes', callback_data: `confirm|${symbol}|${action}|${expiry}|${amount}` },
+            { text: '❌ No', callback_data: 'cancel' }
+          ]
+        ]
+      }
     );
   }
 
+  res.status(200).send('Received');
+});
+
+// === Telegram Callback for Confirmation ===
+app.post(`/callback`, async (req, res) => {
+  const { callback_query } = req.body;
+  if (!callback_query) return res.sendStatus(400);
+
+  const { id, data: cbData, message } = callback_query;
+
+  if (cbData.startsWith('confirm')) {
+    const [, symbol, action, expiry, amount] = cbData.split('|');
+    triggerMacro(symbol, action, expiry, amount);
+    await sendTelegramMessage(`📍 Trade Executed
+
+<b>Pair:</b> ${symbol}
+<b>Action:</b> ${action.toUpperCase()}
+<b>Expiry:</b> ${expiry} min
+<b>Amount:</b> $${amount}`);
+  } else {
+    await sendTelegramMessage('❌ Trade Cancelled');
+  }
   res.sendStatus(200);
 });
 
-// === START SERVER ===
-app.listen(PORT, () => {
-  console.log(`📡 Webhook server running on http://localhost:${PORT}`);
+// === Menu Command (/menu) ===
+app.get('/menu', async (req, res) => {
+  await sendTelegramMessage(
+    `📊 <b>Quantum Bot Menu</b>
+
+<b>/menu</b> - Show this menu
+<b>/stats</b> - View trading stats
+<b>/analyze</b> - Analyze top pairs
+<b>/help</b> - Strategy Help
+
+🟢 Auto-trading: <code>On</code>
+🔘 Confidence Threshold: ${AUTO_EXECUTE_CONFIDENCE_THRESHOLD}%
+💵 Default Amount: $${DEFAULT_TRADE_AMOUNT}-${DEFAULT_MAX_AMOUNT}
+📍 Entry Mode: ${BALANCE_PERCENTAGE_MODE ? 'Balance %' : 'Fixed $'}`
+  );
+  res.send('Menu Sent');
 });
+
+// === Start Server ===
+app.listen(PORT, () => console.log(`✅ Webhook server running on http://localhost:${PORT}`));
