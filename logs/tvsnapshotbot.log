@@ -8881,3 +8881,7 @@ Traceback (most recent call last):
 telegram.error.NetworkError: httpx.ConnectError: [Errno 11001] getaddrinfo failed
 2025-07-23 11:44:07,130 | INFO | telegram.ext.Application | Application is stopping. This might take a moment.
 2025-07-23 11:44:07,191 | INFO | telegram.ext.Application | Application.stop() complete
+2025-07-23 12:59:00,166 | INFO | TVSnapBot | No state file found; starting fresh.
+2025-07-23 12:59:00,166 | INFO | TVSnapBot | No state file found; starting fresh.
+2025-07-23 12:59:00,175 | INFO | TVSnapBot | Flask TV webhook listening on port 8081
+2025-07-23 12:59:00,175 | INFO | TVSnapBot | Flask TV webhook listening on port 8081

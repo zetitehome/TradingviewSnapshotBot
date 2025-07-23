@@ -1,257 +1,405 @@
-# ---------------------------------------------------------------------------
-# FILE 3/3: tradelogger.py
-# ---------------------------------------------------------------------------
-
 """
-tradelogger.py – Persistent trade & signal statistics store
------------------------------------------------------------
+tradelogger.py
+==============
 
-Stores every trade/alert to a JSON file and computes aggregated performance stats.
-Supports Quantum Level tiers.
+Persistent trade history + performance stats for the TradingView Snapshot Bot.
 
-API:
-    store = TradeStatsStore(pathlib.Path('state/stats.json'))
-    store.record_trade(pair, direction, amount, amount_mode, expiry, result=None, profit=None)
-    summary = store.summary_for_chat(chat_id)
-    txt = format_stats_summary(summary)
+Features
+--------
+* Append trade requests & trade outcomes (win/loss/break-even).
+* Track running balance, realized PnL, hit-rate, drawdown.
+* Generate "Quantum Level" progressive tiers based on trade count + win rate.
+* Format pretty Telegram stats blocks with emojis.
+* Rolling save to JSON (atomic safe write).
 
-Result codes expected: 'win','loss','tie', None (open/unknown).
-Profit: signed float in account currency if known.
+Integration Flow
+----------------
+The bot (tvsnapshotbot.py) will:
+ 1. On trade signal (/trade or auto from TV webhook), call logger.record_signal(...)
+ 2. When actual trade is *sent* (UI.Vision requested), call logger.record_execution(...)
+ 3. When result arrives (manual entry or feed), call logger.record_result(...)
+ 4. Periodically call logger.summary() and send to Telegram (/stats)
 
-Quantum Levels (adjust thresholds below):
-    L1 Beginner 0+ trades
-    L2 Bronze   50+ trades
-    L3 Silver   150+ trades
-    L4 Gold     350+ trades
-    L5 Quantum  750+ trades
+You can also manually import the JSON into spreadsheets.
 
-You can map to accuracy or profit thresholds if preferred.
+JSON Schema (root)
+------------------
+{
+  "balance_start": 1000.0,
+  "balance_current": 1033.25,
+  "trades": [
+    {
+      "id": "uuid",
+      "ts": 1700000000000,
+      "symbol": "EUR/USD",
+      "direction": "CALL",
+      "expiry_min": 5,
+      "stake": 10.0,
+      "source": "user|tv|analyze",
+      "status": "requested|executed|closed",
+      "result": "W|L|B|?",
+      "payout_pct": 80.0,
+      "pnl": 8.0
+    }, ...
+  ]
+}
+
 """
 
 from __future__ import annotations
 
 import json
-import pathlib
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import time
+import uuid
+import math
+import os
+from dataclasses import dataclass, asdict, field
+from typing import Optional, List, Dict, Any, Iterable
 
 
-# ------------------------------------------------------------------
-# Data structures
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
 @dataclass
 class TradeRecord:
-    ts: float
-    chat_id: int
-    pair: str
-    direction: str
-    amount: float
-    amount_mode: str  # '$' or '%'
-    expiry: str
-    result: Optional[str] = None  # win|loss|tie|None
-    profit: Optional[float] = None  # signed
+    id: str
+    ts: int
+    symbol: str
+    direction: str  # CALL/PUT
+    expiry_min: int
+    stake: float
+    source: str = "user"  # user|tv|analyze|auto
+    status: str = "requested"  # requested|executed|closed
+    result: str = "?"          # W L B ?
+    payout_pct: float = 0.0    # actual payout % at time of trade
+    pnl: float = 0.0           # realized when closed
+    notes: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "ts": self.ts,
-            "chat_id": self.chat_id,
-            "pair": self.pair,
-            "direction": self.direction,
-            "amount": self.amount,
-            "amount_mode": self.amount_mode,
-            "expiry": self.expiry,
-            "result": self.result,
-            "profit": self.profit,
-        }
-
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "TradeRecord":
-        return cls(
-            ts=float(d["ts"]),
-            chat_id=int(d["chat_id"]),
-            pair=str(d["pair"]),
-            direction=str(d["direction"]),
-            amount=float(d.get("amount", 0.0)),
-            amount_mode=str(d.get("amount_mode", "$")),
-            expiry=str(d.get("expiry", "")),
-            result=d.get("result"),
-            profit=float(d["profit"]) if d.get("profit") is not None else None,
-        )
+        return asdict(self)
 
 
 @dataclass
-class StatsSummary:
-    chat_id: int
-    total_profit: float = 0.0
-    total_trades: int = 0
-    wins: int = 0
-    losses: int = 0
-    ties: int = 0
-    max_drawdown: float = 0.0
-    avg_profit: float = 0.0
-    avg_loss: float = 0.0
-    max_loss_single: float = 0.0
-    max_consec_losses: int = 0
-    signals_sent: int = 0
-    signal_accuracy: float = 0.0  # 0-1
-    best_signal: float = 0.0
-    worst_signal: float = 0.0
-    quantum_level: int = 1
+class QuantumLevel:
+    level: int
+    name: str
+    min_trades: int
+    min_accuracy: float  # 0..1
 
 
-# ------------------------------------------------------------------
-# Quantum tiers
-# ------------------------------------------------------------------
-QUANTUM_THRESHOLDS = [0, 50, 150, 350, 750]  # trades
+@dataclass
+class StatsSnapshot:
+    balance_start: float
+    balance_current: float
+    total_pnl: float
+    total_trades: int
+    wins: int
+    losses: int
+    breakeven: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    max_drawdown: float
+    max_loss_trade: float
+    consec_losses: int
+    best_signal_perf: float
+    worst_signal_perf: float
+    quantum_level: QuantumLevel
+    last_updated_ts: int
+    source_info: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d["quantum_level"] = {
+            "level": self.quantum_level.level,
+            "name": self.quantum_level.name,
+            "min_trades": self.quantum_level.min_trades,
+            "min_accuracy": self.quantum_level.min_accuracy,
+        }
+        return d
 
 
-def quantum_level_for_trades(n: int) -> int:
-    lvl = 1
-    for i, th in enumerate(QUANTUM_THRESHOLDS, start=1):
-        if n >= th:
-            lvl = i
-    return lvl
+# ---------------------------------------------------------------------------
+# Quantum level thresholds
+# ---------------------------------------------------------------------------
+
+DEFAULT_QUANTUM_LEVELS: List[QuantumLevel] = [
+    QuantumLevel(1, "Bronze",      min_trades=0,    min_accuracy=0.00),
+    QuantumLevel(2, "Silver",      min_trades=25,   min_accuracy=0.45),
+    QuantumLevel(3, "Gold",        min_trades=100,  min_accuracy=0.55),
+    QuantumLevel(4, "Platinum",    min_trades=250,  min_accuracy=0.65),
+    QuantumLevel(5, "Quantum",     min_trades=500,  min_accuracy=0.75),
+    QuantumLevel(6, "Quantum+",    min_trades=1000, min_accuracy=0.80),
+]
 
 
-# ------------------------------------------------------------------
-# Store
-# ------------------------------------------------------------------
-class TradeStatsStore:
-    def __init__(self, path: pathlib.Path) -> None:
+def determine_quantum_level(total_trades: int,
+                            accuracy: float,
+                            levels: List[QuantumLevel] = DEFAULT_QUANTUM_LEVELS) -> QuantumLevel:
+    # pick the highest level whose requirements are met
+    best = levels[0]
+    for lvl in levels:
+        if total_trades >= lvl.min_trades and accuracy >= lvl.min_accuracy:
+            best = lvl
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Trade Logger
+# ---------------------------------------------------------------------------
+
+class TradeLogger:
+    """
+    JSON-backed trade log. Thread-safe enough for low-volume bots (single process).
+    """
+
+    def __init__(self,
+                 path: str,
+                 starting_balance: float = 1000.0,
+                 autosave: bool = True):
         self.path = path
+        self.autosave = autosave
+        self.balance_start = float(starting_balance)
+        self.balance_current = float(starting_balance)
         self.trades: List[TradeRecord] = []
-        self.load()
+        self._load_if_exists()
 
-    def load(self) -> None:
-        if not self.path.exists():
+    # --- IO ----------------------------------------------------------------
+
+    def _load_if_exists(self):
+        if not os.path.exists(self.path):
             return
         try:
-            data = json.loads(self.path.read_text(encoding='utf-8'))
-            self.trades = [TradeRecord.from_dict(x) for x in data]
+            with open(self.path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
         except Exception:
-            self.trades = []
+            return
+        self.balance_start = float(data.get("balance_start", self.balance_start))
+        self.balance_current = float(data.get("balance_current", self.balance_current))
+        trades_in = data.get("trades", [])
+        self.trades = []
+        for t in trades_in:
+            try:
+                self.trades.append(TradeRecord(
+                    id=str(t.get("id") or uuid.uuid4()),
+                    ts=int(t.get("ts") or int(time.time() * 1000)),
+                    symbol=str(t.get("symbol") or "?"),
+                    direction=str(t.get("direction") or "CALL"),
+                    expiry_min=int(t.get("expiry_min") or 5),
+                    stake=float(t.get("stake") or 0),
+                    source=str(t.get("source") or "user"),
+                    status=str(t.get("status") or "requested"),
+                    result=str(t.get("result") or "?"),
+                    payout_pct=float(t.get("payout_pct") or 0.0),
+                    pnl=float(t.get("pnl") or 0.0),
+                    notes=str(t.get("notes") or ""),
+                ))
+            except Exception:
+                continue
 
-    def save(self) -> None:
+    def _save(self):
+        if not self.autosave:
+            return
+        tmp = self.path + ".tmp"
+        data = {
+            "balance_start": self.balance_start,
+            "balance_current": self.balance_current,
+            "trades": [t.to_dict() for t in self.trades],
+        }
         try:
-            out = [t.to_dict() for t in self.trades]
-            self.path.write_text(json.dumps(out, indent=2), encoding='utf-8')
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            os.replace(tmp, self.path)
         except Exception:
             pass
 
-    def record_trade(
-        self,
-        pair: str,
-        direction: str,
-        amount: float,
-        amount_mode: str,
-        expiry: str,
-        result: Optional[str],
-        profit: Optional[float] = None,
-        chat_id: Optional[int] = None,
-        ts: Optional[float] = None,
-    ) -> None:
-        import time
+    # --- Helpers -----------------------------------------------------------
+
+    def _now_ms(self) -> int:
+        return int(time.time() * 1000)
+
+    def _find_trade(self, trade_id: str) -> Optional[TradeRecord]:
+        for t in self.trades:
+            if t.id == trade_id:
+                return t
+        return None
+
+    # --- Record phases -----------------------------------------------------
+
+    def record_signal(self,
+                      symbol: str,
+                      direction: str,
+                      expiry_min: int,
+                      stake: float,
+                      source: str = "user",
+                      notes: str = "") -> TradeRecord:
+        """
+        Create a new requested trade.
+        """
         rec = TradeRecord(
-            ts=time.time() if ts is None else ts,
-            chat_id=chat_id or 0,
-            pair=pair,
-            direction=direction,
-            amount=amount,
-            amount_mode=amount_mode,
-            expiry=expiry,
-            result=result,
-            profit=profit,
+            id=str(uuid.uuid4()),
+            ts=self._now_ms(),
+            symbol=symbol,
+            direction=direction.upper(),
+            expiry_min=int(expiry_min),
+            stake=float(stake),
+            source=source,
+            status="requested",
+            notes=notes,
         )
         self.trades.append(rec)
-        self.save()
+        self._save()
+        return rec
 
-    # For signal stats we just treat each trade as a signal.
-    def summary_for_chat(self, chat_id: int) -> StatsSummary:
-        # gather recs
-        recs = [t for t in self.trades if t.chat_id in (0, chat_id)]  # 0=global/unset
-        s = StatsSummary(chat_id=chat_id)
-        bal = 0.0
-        peak = 0.0
-        dd = 0.0
-        consec_loss = 0
-        max_consec_loss = 0
-        best = 0.0
-        worst = 0.0
-        profs = []
-        loss_vals = []
-        for r in recs:
-            if r.profit is not None:
-                bal += r.profit
-                if bal > peak:
-                    peak = bal
-                dd = min(dd, bal - peak)  # negative
-                if r.profit > best:
-                    best = r.profit
-                if r.profit < worst:
-                    worst = r.profit
-                if r.profit < 0:
-                    loss_vals.append(r.profit)
-            if r.result == 'win':
-                s.wins += 1
-                consec_loss = 0
-                profs.append(r.profit or 0.0)
-            elif r.result == 'loss':
-                s.losses += 1
-                consec_loss += 1
-                profs.append(r.profit or 0.0)
-                if consec_loss > max_consec_loss:
-                    max_consec_loss = consec_loss
-            elif r.result == 'tie':
-                s.ties += 1
-                consec_loss = 0
-        s.total_trades = len(recs)
-        s.total_profit = bal
-        s.max_drawdown = dd
-        s.max_consec_losses = max_consec_loss
-        s.best_signal = best
-        s.worst_signal = worst
-        s.avg_profit = (sum(p for p in profs if p > 0) / max(1, len([p for p in profs if p > 0]))) if profs else 0.0
-        s.avg_loss = (sum(p for p in profs if p < 0) / max(1, len([p for p in profs if p < 0]))) if profs else 0.0
-        s.signals_sent = s.total_trades
-        denom = s.wins + s.losses
-        s.signal_accuracy = (s.wins / denom) if denom > 0 else 0.0
-        s.quantum_level = quantum_level_for_trades(s.total_trades)
-        return s
+    def record_execution(self, trade_id: str, payout_pct: float = 0.0):
+        """
+        Mark trade executed (order sent to broker).
+        """
+        t = self._find_trade(trade_id)
+        if not t:
+            return
+        t.status = "executed"
+        t.payout_pct = float(payout_pct)
+        self._save()
+
+    def record_result(self,
+                      trade_id: str,
+                      result: str,
+                      pnl: float,
+                      balance_after: Optional[float] = None,
+                      notes: str = ""):
+        """
+        Mark trade closed with W/L/B & update running balance.
+        """
+        t = self._find_trade(trade_id)
+        if not t:
+            return
+        t.status = "closed"
+        t.result = result.upper()
+        t.pnl = float(pnl)
+        if notes:
+            t.notes = notes
+
+        self.balance_current += pnl if balance_after is None else 0.0
+        if balance_after is not None:
+            self.balance_current = float(balance_after)
+        self._save()
+
+    # --- Stats -------------------------------------------------------------
+
+    def _iter_closed(self) -> Iterable[TradeRecord]:
+        for t in self.trades:
+            if t.status == "closed":
+                yield t
+
+    def _iter_executed_or_closed(self) -> Iterable[TradeRecord]:
+        for t in self.trades:
+            if t.status in ("executed", "closed"):
+                yield t
+
+    def summary(self) -> StatsSnapshot:
+        closed = list(self._iter_closed())
+        total_trades = len(closed)
+        wins = sum(1 for t in closed if t.result == "W")
+        losses = sum(1 for t in closed if t.result == "L")
+        breakeven = sum(1 for t in closed if t.result == "B")
+        total_pnl = sum(t.pnl for t in closed)
+
+        win_rate = (wins / total_trades) if total_trades > 0 else 0.0
+
+        win_pnls = [t.pnl for t in closed if t.pnl > 0]
+        loss_pnls = [t.pnl for t in closed if t.pnl < 0]
+
+        avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0.0
+        avg_loss = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0.0
+
+        # max drawdown (equity curve)
+        eq = self.balance_start
+        max_peak = eq
+        drawdowns = [0.0]
+        max_loss_trade = 0.0
+        consec_losses = 0
+        worst_consec = 0
+        for t in closed:
+            eq += t.pnl
+            if t.pnl < max_loss_trade:
+                max_loss_trade = t.pnl
+            if t.pnl < 0:
+                consec_losses += 1
+                if consec_losses > worst_consec:
+                    worst_consec = consec_losses
+            else:
+                consec_losses = 0
+            if eq > max_peak:
+                max_peak = eq
+            dd = (max_peak - eq) / max_peak if max_peak else 0.0
+            drawdowns.append(dd)
+
+        max_dd = max(drawdowns) if drawdowns else 0.0
+
+        best_signal_perf = max(win_pnls) if win_pnls else 0.0
+        worst_signal_perf = min(loss_pnls) if loss_pnls else 0.0
+
+        lvl = determine_quantum_level(total_trades, win_rate)
+
+        return StatsSnapshot(
+            balance_start=self.balance_start,
+            balance_current=self.balance_current,
+            total_pnl=total_pnl,
+            total_trades=total_trades,
+            wins=wins,
+            losses=losses,
+            breakeven=breakeven,
+            win_rate=win_rate,
+            avg_win=avg_win,
+            avg_loss=avg_loss,
+            max_drawdown=max_dd,
+            max_loss_trade=max_loss_trade,
+            consec_losses=worst_consec,
+            best_signal_perf=best_signal_perf,
+            worst_signal_perf=worst_signal_perf,
+            quantum_level=lvl,
+            last_updated_ts=self._now_ms(),
+        )
+
+    # --- Formatting --------------------------------------------------------
+
+    def stats_block(self, snapshot: Optional[StatsSnapshot] = None) -> str:
+        """
+        Pretty block for Telegram.
+        """
+        s = snapshot or self.summary()
+        wr_pct = s.win_rate * 100.0
+        pnl_pct = ((s.balance_current - s.balance_start) / s.balance_start * 100.0
+                   if s.balance_start else 0.0)
+        lvl_line = f"🔘 {s.quantum_level.name} (Level {s.quantum_level.level})"
+
+        txt = (
+            "📊 *Statistics Overview*\n\n"
+            f"{lvl_line}\n"
+            "Each level unlocks more features, greater accuracy, and stronger AI performance.\n\n"
+            f"• *Total Profit/Loss:* {pnl_pct:+.0f}%\n"
+            f"• *Total Trades:* {s.total_trades} ({s.wins} profitable/{s.losses} loss)\n"
+            f"• *Success Rate:* {wr_pct:.0f}%\n"
+            f"• *Average Profit Per Trade:* {s.avg_win:+.2f}$\n"
+            f"• *Maximum Drawdown:* {s.max_drawdown*100:.0f}%\n\n"
+            "📉 *Risk & Loss Metrics*\n"
+            f"• Average Loss Per Trade: {s.avg_loss:.2f}$\n"
+            f"• Max Loss on a Single Trade: {s.max_loss_trade:.2f}$\n"
+            f"• Consecutive Losing Trades: {s.consec_losses}\n\n"
+            "📡 *Signal Analysis*\n"
+            f"• Signals Closed: {s.total_trades}\n"
+            f"• Best Signal PnL: {s.best_signal_perf:+.2f}$\n"
+            f"• Worst Signal PnL: {s.worst_signal_perf:+.2f}$\n\n"
+            "‼️ Updated every three days ‼️"
+        )
+        return txt
 
 
-# ------------------------------------------------------------------
-# Formatting
-# ------------------------------------------------------------------
-QUANTUM_LEVEL_TEXT = {
-    1: "Level 1 • Initiate",
-    2: "Level 2 • Bronze",
-    3: "Level 3 • Silver",
-    4: "Level 4 • Gold",
-    5: "Level 5 • Quantum",
-}
+# ---------------------------------------------------------------------------
+# Convenience loader
+# ---------------------------------------------------------------------------
 
-
-def format_stats_summary(s: StatsSummary) -> str:
-    lvl_text = QUANTUM_LEVEL_TEXT.get(s.quantum_level, f"Level {s.quantum_level}")
-    winrate = (s.wins * 100.0 / max(1, s.wins + s.losses))
-    txt = (
-        "📊 *Statistics Overview*\n\n"
-        f"🔘 *{lvl_text}*\n"
-        "Each level unlocks more features, greater accuracy, and stronger AI performance.\n\n"
-        f"• Total Profit/Loss: {s.total_profit:+.2f}\n"
-        f"• Total Trades: {s.total_trades} ({s.wins} profitable/{s.losses} loss)\n"
-        f"• Success Rate: {winrate:.0f}%\n"
-        f"• Average Profit Per Trade: {s.avg_profit:+.2f}\n"
-        f"• Maximum Drawdown: {s.max_drawdown:.2f}\n\n"
-        "📉 *Risk & Loss Metrics*\n"
-        f"• Average Loss Per Trade: {s.avg_loss:.2f}\n"
-        f"• Max Loss on a Single Trade: {s.worst_signal:.2f}\n"
-        f"• Consecutive Losing Trades: {s.max_consec_losses}\n\n"
-        "📡 *Signal Analysis*\n"
-        f"• Signals Sent: {s.signals_sent}\n"
-        f"• Signal Accuracy: {s.signal_accuracy*100:.0f}%\n"
-        f"• Best Signal Performance: {s.best_signal:+.2f}\n"
-        f"• Worst Signal Performance: {s.worst_signal:+.2f}\n\n"
-        "‼️ Updated when new trades logged ‼️"
-    )
-    return txt
+def load_logger(path: str, starting_balance: float = 1000.0, autosave: bool = True) -> TradeLogger:
+    return TradeLogger(path=path, starting_balance=starting_balance, autosave=autosave)
