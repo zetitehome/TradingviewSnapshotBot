@@ -1,317 +1,267 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-TradingView → Telegram Snapshot Bot (Inline Edition)
-====================================================
-Key Features
-------------
-• Async python-telegram-bot v20+ (no legacy Updater crash).
-• Inline keyboards: pick Pair → Analyze → Trade flow.
-• /pairs paginated list (FX, OTC, Crypto, Indices, Metals, Custom).
-• /analyze SYMBOL [tf] [theme] → pulls JSON candles from /snapshot first, runs quick TA, suggests CALL/PUT + 1m/3m/5m/15m.
-• Snapshot fetch order: GET /snapshot/:pair?tf=X&theme=Y → fallback to /run?base=chart&exchange=EX&ticker=TK&interval=X&theme=Y.
-• Accept/validate PNG (>2 KB) and ignore HTML error bodies.
-• TradingView webhook (/tv & /webhook) → Telegram alert + snapshot + “Trade This” button.
-• Pocket Option automation: POST to UI.Vision macro endpoint (configurable).
-• Trade size presets: $1, $5, $10, $25, $50, %1, %2.5, %5, %10 (user‑selectable; stored in JSON state).
-• Rotating logs + Windows console safe logging (binary truncation).
-• Simple persistence: `state.json` (per‑chat size mode/amount + last pair).
-• Rate limiting + global throttle.
-• Config by environment variables (or defaults).
+# =============================
+# QuantumTraderBot Full Package
+# =============================
+#
+# This document contains THREE Python source files you asked for:
+#   1. tvsnapshotbot.py   – main Telegram bot + Flask webhook + UI + analyze + trading hooks
+#   2. strategy.py        – pluggable technical-analysis strategy helpers
+#   3. tradelogger.py     – persistent trade/alert statistics + quantum level system
+#
+# Copy each section into its own .py file in your project directory.
+# Make sure to install the required dependencies (see INSTALL notes below).
+#
+# ---------------------------------------------------------------------------
+# INSTALL (first time)
+# ---------------------------------------------------------------------------
+# In PowerShell (Windows):
+#   cd C:\Users\Chop\TeleTradingView\TradingviewSnapshotBot
+#   python -m venv .venv
+#   .\.venv\Scripts\Activate.ps1
+#   pip install --upgrade pip
+#   pip install "python-telegram-bot[rate-limiter]>=20,<21" flask httpx pandas numpy pillow packaging
+#   # If you plan to run TA extras that need TA-Lib, skip unless installed; we fallback.
+#
+# Node screenshot microservice must be running (server.js) on the host/port set in SNAPSHOT_BASE_URL.
+#
+# ---------------------------------------------------------------------------
+# ENVIRONMENT (.env or PowerShell session vars)
+# ---------------------------------------------------------------------------
+# Example (PowerShell):
+#   $env:TELEGRAM_BOT_TOKEN="8009536179:XXXXXXXXXXXXXXX"
+#   $env:TELEGRAM_CHAT_ID="6337160812"               # default chat fallback
+#   $env:SNAPSHOT_BASE_URL="http://localhost:10000"  # your Node screenshot server
+#   $env:DEFAULT_EXCHANGE="FX"
+#   $env:DEFAULT_INTERVAL="1"
+#   $env:DEFAULT_THEME="dark"
+#   $env:TV_WEBHOOK_PORT="8081"                      # Flask port
+#   $env:TV_WEBHOOK_URL="http://localhost:8081/tv"   # for TradingView alerts
+#   $env:UI_VISION_URL="http://localhost:8080/pocket-trade"  # UI.Vision REST macro trigger
+#   $env:UI_VISION_MACRO_NAME="PocketTrade"
+#   $env:UI_VISION_MACRO_PARAMS="{}"
+#   $env:WEBHOOK_SECRET="optionalsecret"
+#
+# Then run:
+#   python tvsnapshotbot.py
+#
+# ---------------------------------------------------------------------------
+# FILE 1/3: tvsnapshotbot.py
+# ---------------------------------------------------------------------------
 
-Environment Variables (expected in shell or .env)
--------------------------------------------------
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=6337160812                # optional default target
-SNAPSHOT_BASE_URL=http://localhost:10000   # your Node/Render snapshot svc
-DEFAULT_EXCHANGE=FX
-DEFAULT_INTERVAL=1
-DEFAULT_THEME=dark
-TV_WEBHOOK_PORT=8081
-TV_WEBHOOK_URL=http://localhost:8081/tv    # optional self URL (for instructions)
-UI_VISION_URL=http://localhost:8080/pocket-trade   # optional
-UI_VISION_MACRO_NAME=PocketTrade
-UI_VISION_MACRO_PARAMS={}                  # JSON string; optional
-WEBHOOK_SECRET=optionalsharedtoken         # optional
+"""
+QuantumTraderBot (tvsnapshotbot.py)
+==================================
+
+Modern async Telegram bot that:
+  • Fetches TradingView chart PNGs via Node screenshot microservice (/snapshot/:pair then /run fallback).
+  • Supports FX + OTC + Indices + Crypto instrument mapping.
+  • Inline keyboard flows: choose pair → timeframe → theme → size → analyze → trade.
+  • /analyze command & callback: quick TA via strategy.py helpers; suggests CALL/PUT & expiry (1m/3m/5m/15m).
+  • /trade command & callback: builds trade JSON; optional UI.Vision webhook trigger to automate Pocket Option.
+  • /pairs interactive selection (paged) + text list.
+  • /stats shows cumulative P/L & performance levels (Quantum levels) via tradelogger.py.
+  • TradingView webhook receiver (Flask) at /tv & /webhook.
+  • Safe logging (never dumps raw binary) + rotating file logs.
+  • JSON state persistence (per-user settings, last pair, preferred trade size).
+
+Tested against python-telegram-bot v20+.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
 import os
+import io
 import re
 import sys
-import threading
+import json
 import time
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import quote, urlencode
+import math
+import enum
+import queue
+import atexit
+import asyncio
+import logging
+import pathlib
+import dataclasses
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Tuple, Optional, Callable, Union
 
 import httpx
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
 
-# telegram imports (v20+)
 from telegram import (
+    __version__ as PTB_VER,
+    Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    Update,
     InputMediaPhoto,
 )
-from telegram.constants import ParseMode, ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
+    Application,
     AIORateLimiter,
-    CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
+    CallbackQueryHandler,
     MessageHandler,
+    ContextTypes,
     filters,
 )
 
-# ---------------------------------------------------------------------------
-# Version / Globals
-# ---------------------------------------------------------------------------
-BOT_VERSION = "3.0.0-inline"
-APP_NAME = "TVSnapBot"
+# Local imports (strategy & stats)
+try:
+    import strategy  # type: ignore
+except Exception:  # minimal fallback
+    strategy = None  # we'll guard uses
 
-# ---------------------------------------------------------------------------
-# Logging Setup (safe for binary bodies)
-# ---------------------------------------------------------------------------
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, "tvsnapshotbot.log")
+try:
+    import tradelogger  # type: ignore
+except Exception:
+    tradelogger = None
 
+# ------------------------------------------------------------------
+# Directories & paths
+# ------------------------------------------------------------------
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR / "logs"
+STATE_DIR = BASE_DIR / "state"
+LOG_DIR.mkdir(exist_ok=True)
+STATE_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "tvsnapshotbot.log"
+STATE_FILE = STATE_DIR / "state.json"
+STATS_FILE = STATE_DIR / "stats.json"
 
-class _SafeFormatter(logging.Formatter):
-    def format(self, record):
-        if isinstance(record.args, tuple):
-            safe_args = []
-            for a in record.args:
-                if isinstance(a, (bytes, bytearray)):
-                    safe_args.append(f"<{len(a)} bytes>")
-                else:
-                    s = str(a)
-                    if len(s) > 300:
-                        s = s[:300] + "...(trunc)…"
-                    # replace non-print
-                    safe_args.append("".join(ch if 32 <= ord(ch) <= 126 else "�" for ch in s))
-            record.args = tuple(safe_args)
-        return super().format(record)
+# ------------------------------------------------------------------
+# Logging (safe)
+# ------------------------------------------------------------------
+_logger = logging.getLogger("TVSnapBot")
+_logger.setLevel(logging.INFO)
+_file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+_console_handler = logging.StreamHandler(sys.stdout)
+_console_handler.setFormatter(logging.Formatter("%(message)s"))
+_logger.addHandler(_file_handler)
+_logger.addHandler(_console_handler)
 
+# Avoid noisy httpx debug by default
+logging.getLogger("httpx").setLevel(logging.INFO)
 
-_console_handler = logging.StreamHandler(stream=sys.stdout)
-_console_handler.setFormatter(_SafeFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-
-from logging.handlers import RotatingFileHandler
-
-_file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
-_file_handler.setFormatter(_SafeFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-
-logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
-logger = logging.getLogger(APP_NAME)
-
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_BOT_TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN not set in environment.")
-
+# ------------------------------------------------------------------
+# Environment variables
+# ------------------------------------------------------------------
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 DEFAULT_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-SNAPSHOT_BASE_URL = os.environ.get("SNAPSHOT_BASE_URL", "http://localhost:10000").rstrip("/")
-DEFAULT_EXCHANGE = os.environ.get("DEFAULT_EXCHANGE", "FX").upper()
+BASE_URL = os.environ.get("SNAPSHOT_BASE_URL", "http://localhost:10000")
+DEFAULT_EXCHANGE = os.environ.get("DEFAULT_EXCHANGE", "FX")
 DEFAULT_INTERVAL = os.environ.get("DEFAULT_INTERVAL", "1")
 DEFAULT_THEME = os.environ.get("DEFAULT_THEME", "dark")
 TV_WEBHOOK_PORT = int(os.environ.get("TV_WEBHOOK_PORT", "8081"))
-TV_WEBHOOK_URL = os.environ.get("TV_WEBHOOK_URL")  # optional
-UI_VISION_URL = os.environ.get("UI_VISION_URL")  # optional
-UI_VISION_MACRO_NAME = os.environ.get("UI_VISION_MACRO_NAME", "PocketTrade")
-UI_VISION_MACRO_PARAMS = os.environ.get("UI_VISION_MACRO_PARAMS")  # JSON string
+TV_WEBHOOK_URL = os.environ.get("TV_WEBHOOK_URL", f"http://localhost:{TV_WEBHOOK_PORT}/tv")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # optional
+UI_VISION_URL = os.environ.get("UI_VISION_URL")  # e.g. http://localhost:8080/pocket-trade
+UI_VISION_MACRO_NAME = os.environ.get("UI_VISION_MACRO_NAME", "PocketTrade")
+UI_VISION_MACRO_PARAMS = os.environ.get("UI_VISION_MACRO_PARAMS", "{}")
+AUTO_TRADE_FROM_TV = os.environ.get("AUTO_TRADE_FROM_TV", "0") not in (None, "0", "false", "False")
+SIM_DEBIT = os.environ.get("SIM_DEBIT", "0") not in (None, "0", "false", "False")
 
-# fallback size if UI_VISION_MACRO_PARAMS invalid
-try:
-    UI_VISION_MACRO_PARAMS_OBJ = json.loads(UI_VISION_MACRO_PARAMS) if UI_VISION_MACRO_PARAMS else {}
-except Exception:
-    UI_VISION_MACRO_PARAMS_OBJ = {}
+if not TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN not set in environment.")
 
-HTTP_TIMEOUT = 60
-_http = httpx.Client(timeout=HTTP_TIMEOUT)
+# ------------------------------------------------------------------
+# Global HTTP client(s)
+# ------------------------------------------------------------------
+_http = httpx.AsyncClient(timeout=60.0)
+_sync = httpx.Client(timeout=60.0)
 
-# ---------------------------------------------------------------------------
-# Rate Limits
-# ---------------------------------------------------------------------------
-RATE_LIMIT_SECONDS = 3
-GLOBAL_MIN_GAP = 0.75
+# ------------------------------------------------------------------
+# Instrument universe (FX, OTC, Indices, Crypto)
+# ------------------------------------------------------------------
+# Display names EXACTLY as user sees them. Mapping -> TradingView symbol info.
 
-_last_per_chat: Dict[int, float] = {}
-_global_last = 0.0
-
-
-def rate_limited(chat_id: int) -> bool:
-    now = time.time()
-    last = _last_per_chat.get(chat_id, 0)
-    if now - last < RATE_LIMIT_SECONDS:
-        return True
-    _last_per_chat[chat_id] = now
-    return False
-
-
-def global_throttle_wait():
-    global _global_last
-    now = time.time()
-    gap = now - _global_last
-    if gap < GLOBAL_MIN_GAP:
-        time.sleep(GLOBAL_MIN_GAP - gap)
-    _global_last = time.time()
-
-
-# ---------------------------------------------------------------------------
-# Asset Catalogs
-# ---------------------------------------------------------------------------
-FX_PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
-    "NZD/USD", "USD/CAD", "EUR/GBP", "EUR/JPY", "GBP/JPY",
-    "AUD/JPY", "NZD/JPY", "EUR/AUD", "GBP/AUD", "EUR/CAD",
-    "USD/MXN", "USD/TRY", "USD/ZAR", "AUD/CHF", "EUR/CHF",
+FX_PAIRS: List[str] = [
+    "EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","NZD/USD","USD/CAD","EUR/GBP","EUR/JPY","GBP/JPY",
+    "AUD/JPY","NZD/JPY","EUR/AUD","GBP/AUD","EUR/CAD","USD/MXN","USD/TRY","USD/ZAR","AUD/CHF","EUR/CHF",
 ]
 
-OTC_PAIRS = [
-    "EUR/USD-OTC", "GBP/USD-OTC", "USD/JPY-OTC", "USD/CHF-OTC", "AUD/USD-OTC",
-    "NZD/USD-OTC", "USD/CAD-OTC", "EUR/GBP-OTC", "EUR/JPY-OTC", "GBP/JPY-OTC",
-    "AUD/CHF-OTC", "EUR/CHF-OTC", "KES/USD-OTC", "MAD/USD-OTC",
-    "USD/BDT-OTC", "USD/MXN-OTC", "USD/MYR-OTC", "USD/PKR-OTC",
+OTC_PAIRS: List[str] = [
+    "EUR/USD-OTC","GBP/USD-OTC","USD/JPY-OTC","USD/CHF-OTC","AUD/USD-OTC","NZD/USD-OTC","USD/CAD-OTC","EUR/GBP-OTC","EUR/JPY-OTC","GBP/JPY-OTC",
+    "AUD/CHF-OTC","EUR/CHF-OTC","KES/USD-OTC","MAD/USD-OTC","USD/BDT-OTC","USD/MXN-OTC","USD/MYR-OTC","USD/PKR-OTC",
 ]
 
-CRYPTO_PAIRS = [
-    "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "DOGE/USD",
+INDEX_SYMBOLS: List[str] = [
+    "US30","US100","US500","GER40","UK100","JPN225","HK50","AUS200","SPX","NDX","DAX","FTSE","NIKKEI","SENSEX",
 ]
 
-INDEX_PAIRS = [
-    "US30", "SPX", "NAS100", "GER40", "UK100",
+CRYPTO_SYMBOLS: List[str] = [
+    "BTC/USD","ETH/USD","SOL/USD","XRP/USD","BNB/USD","DOGE/USD","ADA/USD","LTC/USD","DOT/USD","TRX/USD",
 ]
 
-METAL_PAIRS = [
-    "XAU/USD", "XAG/USD",
-]
+ALL_INSTRUMENTS: List[str] = FX_PAIRS + OTC_PAIRS + INDEX_SYMBOLS + CRYPTO_SYMBOLS
 
-ALL_PAIRS = FX_PAIRS + OTC_PAIRS + CRYPTO_PAIRS + INDEX_PAIRS + METAL_PAIRS
+# If you want to page results in inline UI
+PAIRS_PER_PAGE = 10
+
+# ------------------------------------------------------------------
+# Exchange mapping table
+# ------------------------------------------------------------------
+# We maintain a canonical {KEY: (exchange, ticker, [fallback_exchanges])} table.
+# KEY format: uppercase, remove spaces & slashes; preserve -OTC.
+
+# Known fallback exchanges to try when capturing charts.
+KNOWN_FX_FALLBACKS = ["FX", "FX_IDC", "OANDA", "FOREXCOM", "IDC"]
+KNOWN_OTC_FALLBACKS = ["QUOTEX", "CURRENCY"] + KNOWN_FX_FALLBACKS
+KNOWN_INDEX_FALLBACKS = ["INDEX", "CME", "TVC", "OANDA"]
+KNOWN_CRYPTO_FALLBACKS = ["BINANCE", "COINBASE", "BYBIT", "BITFINEX", "KRAKEN", "OANDA"]
+
+# Primary mapping dictionary is built below.
+PAIR_MAP: Dict[str, Tuple[str, str, List[str]]] = {}
 
 
-def _canon_key(pair: str) -> str:
-    return pair.strip().upper().replace(" ", "").replace("/", "")
+def _canon_key(name: str) -> str:
+    return name.strip().upper().replace(" ", "").replace("/", "")
 
+# --- FX ---
+for disp in FX_PAIRS:
+    key = _canon_key(disp)
+    PAIR_MAP[key] = (DEFAULT_EXCHANGE, disp.replace("/", ""), KNOWN_FX_FALLBACKS)
 
-# Map OTC to underlying tickers (for /run fallback)
-_OTC_UNDERLYING = {
-    "EUR/USD-OTC": "EURUSD",
-    "GBP/USD-OTC": "GBPUSD",
-    "USD/JPY-OTC": "USDJPY",
-    "USD/CHF-OTC": "USDCHF",
-    "AUD/USD-OTC": "AUDUSD",
-    "NZD/USD-OTC": "NZDUSD",
-    "USD/CAD-OTC": "USDCAD",
-    "EUR/GBP-OTC": "EURGBP",
-    "EUR/JPY-OTC": "EURJPY",
-    "GBP/JPY-OTC": "GBPJPY",
-    "AUD/CHF-OTC": "AUDCHF",
-    "EUR/CHF-OTC": "EURCHF",
-    "KES/USD-OTC": "USDKES",
-    "MAD/USD-OTC": "USDMAD",
-    "USD/BDT-OTC": "USDBDT",
-    "USD/MXN-OTC": "USDMXN",
-    "USD/MYR-OTC": "USDMYR",
-    "USD/PKR-OTC": "USDPKR",
+# --- OTC -> underlying feed guess via QUOTEX first ---
+_underlying_otc = {
+    "EUR/USD-OTC":"EURUSD","GBP/USD-OTC":"GBPUSD","USD/JPY-OTC":"USDJPY","USD/CHF-OTC":"USDCHF","AUD/USD-OTC":"AUDUSD",
+    "NZD/USD-OTC":"NZDUSD","USD/CAD-OTC":"USDCAD","EUR/GBP-OTC":"EURGBP","EUR/JPY-OTC":"EURJPY","GBP/JPY-OTC":"GBPJPY",
+    "AUD/CHF-OTC":"AUDCHF","EUR/CHF-OTC":"EURCHF","KES/USD-OTC":"USDKES","MAD/USD-OTC":"USDMAD","USD/BDT-OTC":"USDBDT",
+    "USD/MXN-OTC":"USDMXN","USD/MYR-OTC":"USDMYR","USD/PKR-OTC":"USDPKR",
 }
+for disp, tk in _underlying_otc.items():
+    key = _canon_key(disp)
+    PAIR_MAP[key] = ("QUOTEX", tk, KNOWN_OTC_FALLBACKS)
 
-# Additional feed preferences per asset group
-# For indices & metals we often need TV-specific root tickers; user may override in env
-INDEX_FALLBACKS = ["INDEX", "CURRENCY", "FX", "OANDA", "FOREXCOM"]
-METAL_FALLBACKS = ["METALS", "CURRENCY", "FX_IDC", "OANDA", "FOREXCOM"]
-CRYPTO_FALLBACKS = ["CRYPTO", "BINANCE", "BYBIT", "BITFINEX", "COINBASE", "KRAKEN"]
+# --- Indices mapping guess (TVC common) ---
+_index_map = {
+    "US30":"DJI","US100":"NDX","US500":"SPX","GER40":"DAX","UK100":"FTSE","JPN225":"NI225","HK50":"HSI","AUS200":"ASX" ,
+    "SPX":"SPX","NDX":"NDX","DAX":"DAX","FTSE":"FTSE","NIKKEI":"NI225","SENSEX":"SENSEX",
+}
+for disp, tk in _index_map.items():
+    key = _canon_key(disp)
+    PAIR_MAP[key] = ("TVC", tk, KNOWN_INDEX_FALLBACKS)
 
-# ---------------------------------------------------------------------------
-# Size Presets
-# ---------------------------------------------------------------------------
-USD_PRESETS = [1, 5, 10, 25, 50, 100]
-PCT_PRESETS = [1.0, 2.5, 5.0, 10.0]
-
-# ---------------------------------------------------------------------------
-# State (per chat) Persistence
-# ---------------------------------------------------------------------------
-STATE_FILE = "state.json"
-
-
-@dataclass
-class ChatState:
-    mode: str = "USD"  # USD or PCT
-    usd_size: int = 5
-    pct_size: float = 1.0
-    last_pair: Optional[str] = None
-    last_tf: Optional[str] = None
-    last_theme: Optional[str] = None
-
-    def current_size_display(self) -> str:
-        return f"${self.usd_size}" if self.mode == "USD" else f"{self.pct_size:.1f}%"
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+# --- Crypto mapping guess (BINANCE spot perpetual) ---
+_crypto_map = {
+    "BTC/USD":"BTCUSDT","ETH/USD":"ETHUSDT","SOL/USD":"SOLUSDT","XRP/USD":"XRPUSDT","BNB/USD":"BNBUSDT",
+    "DOGE/USD":"DOGEUSDT","ADA/USD":"ADAUSDT","LTC/USD":"LTCUSDT","DOT/USD":"DOTUSDT","TRX/USD":"TRXUSDT",
+}
+for disp, tk in _crypto_map.items():
+    key = _canon_key(disp)
+    PAIR_MAP[key] = ("BINANCE", tk, KNOWN_CRYPTO_FALLBACKS)
 
 
-_chat_state: Dict[int, ChatState] = {}
+# ------------------------------------------------------------------
+# Timeframe & theme utilities
+# ------------------------------------------------------------------
 
-
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        logger.info("No state file found; starting fresh.")
-        return
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        for k, v in raw.items():
-            try:
-                _chat_state[int(k)] = ChatState(**v)
-            except Exception:
-                continue
-        logger.info("Loaded state for %d chats.", len(_chat_state))
-    except Exception as e:
-        logger.warning("State load failed: %s", e)
-
-
-def save_state():
-    try:
-        raw = {str(k): v.to_dict() for k, v in _chat_state.items()}
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
-    except Exception as e:
-        logger.warning("State save failed: %s", e)
-
-
-def get_state(chat_id: int) -> ChatState:
-    st = _chat_state.get(chat_id)
-    if not st:
-        st = ChatState()
-        _chat_state[chat_id] = st
-    return st
-
-
-# ---------------------------------------------------------------------------
-# Normalization Helpers
-# ---------------------------------------------------------------------------
-def norm_theme(val: Optional[str]) -> str:
-    if not val:
-        return DEFAULT_THEME
-    return "light" if val.lower().startswith("l") else "dark"
-
-
-def norm_interval(tf: Optional[str]) -> str:
-    if not tf:
+def norm_interval(v: str | None) -> str:
+    if not v:
         return DEFAULT_INTERVAL
-    t = tf.strip().lower()
+    t = v.strip().lower()
     if t.endswith("m") and t[:-1].isdigit():
         return t[:-1]
     if t.endswith("h") and t[:-1].isdigit():
@@ -320,15 +270,38 @@ def norm_interval(tf: Optional[str]) -> str:
         return "D"
     if t in ("w", "1w", "week"):
         return "W"
-    if t in ("mo", "m", "1m", "month"):
+    if t in ("m", "1m", "mo", "month"):
         return "M"
     if t.isdigit():
         return t
     return DEFAULT_INTERVAL
 
 
-_CALL_WORDS = {"CALL", "BUY", "UP", "LONG"}
-_PUT_WORDS = {"PUT", "SELL", "DOWN", "SHORT"}
+def norm_theme(v: str | None) -> str:
+    return "light" if (v and v.lower().startswith("l")) else "dark"
+
+
+# ------------------------------------------------------------------
+# Resolve symbol helpers
+# ------------------------------------------------------------------
+
+def resolve_symbol(raw: str) -> Tuple[str, str, List[str]]:
+    """Return (exchange, ticker, fallback_list)."""
+    if not raw:
+        return DEFAULT_EXCHANGE, "EURUSD", KNOWN_FX_FALLBACKS
+    s = raw.strip().upper()
+    if ":" in s:  # explicit EX:TK
+        ex, tk = s.split(":", 1)
+        return ex, tk, KNOWN_FX_FALLBACKS
+    key = _canon_key(s)
+    return PAIR_MAP.get(key, (DEFAULT_EXCHANGE, re.sub(r"[^A-Z0-9]", "", s), KNOWN_FX_FALLBACKS))
+
+
+# ------------------------------------------------------------------
+# Pocket Option / direction utilities
+# ------------------------------------------------------------------
+_CALL_WORDS = {"CALL","BUY","UP","LONG","HIGH"}
+_PUT_WORDS  = {"PUT","SELL","DOWN","SHORT","LOW"}
 
 
 def parse_direction(word: Optional[str]) -> Optional[str]:
@@ -342,857 +315,886 @@ def parse_direction(word: Optional[str]) -> Optional[str]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Symbol Resolution
-# ---------------------------------------------------------------------------
-def _classify_symbol(raw: str) -> str:
-    """Return asset class hint: FX, OTC, CRYPTO, INDEX, METAL, UNKNOWN."""
-    s = raw.upper()
-    if "-OTC" in s:
-        return "OTC"
-    if s in {p.upper() for p in FX_PAIRS}:
-        return "FX"
-    if s in {p.upper() for p in CRYPTO_PAIRS}:
-        return "CRYPTO"
-    if s in {p.upper() for p in INDEX_PAIRS}:
-        return "INDEX"
-    if s in {"XAUUSD", "XAGUSD", "XAU/USD", "XAG/USD"}:
-        return "METAL"
-    return "UNKNOWN"
+# ------------------------------------------------------------------
+# Persistent user settings & sessions
+# ------------------------------------------------------------------
+
+class TradeSizeMode(enum.Enum):
+    DOLLAR = "USD"
+    PERCENT = "%"
 
 
-def resolve_symbol(raw: str) -> Tuple[str, str, bool, List[str]]:
-    """
-    Return (exchange, ticker, is_otc, alt_exchanges).
-    """
-    if not raw:
-        return DEFAULT_EXCHANGE, "EURUSD", False, []
+@dataclass
+class UserSettings:
+    chat_id: int
+    default_interval: str = DEFAULT_INTERVAL
+    default_theme: str = DEFAULT_THEME
+    size_mode: TradeSizeMode = TradeSizeMode.DOLLAR
+    size_value: float = 1.0  # $ or %
+    last_pair: Optional[str] = None
 
-    s = raw.strip().upper()
-    is_otc = "-OTC" in s
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "chat_id": self.chat_id,
+            "default_interval": self.default_interval,
+            "default_theme": self.default_theme,
+            "size_mode": self.size_mode.value,
+            "size_value": self.size_value,
+            "last_pair": self.last_pair,
+        }
 
-    if ":" in s:  # explicit
-        ex, tk = s.split(":", 1)
-        return ex, re.sub(r"[^A-Z0-9]", "", tk), is_otc, []
-
-    # Known direct lists
-    if is_otc and raw in _OTC_UNDERLYING:
-        # we route OTC to QUOTEX (or alt feed) for snapshot fallback
-        tk = _OTC_UNDERLYING[raw]
-        return "QUOTEX", tk, True, [DEFAULT_EXCHANGE, "FX", "FX_IDC", "OANDA", "FOREXCOM"]
-
-    # Try FX
-    canon = _canon_key(raw)
-    if canon.endswith("OTC"):
-        for k, v in _OTC_UNDERLYING.items():
-            if _canon_key(k) == canon:
-                tk = v
-                return "QUOTEX", tk, True, [DEFAULT_EXCHANGE, "FX", "FX_IDC", "OANDA", "FOREXCOM"]
-
-    if canon in (p.replace("/", "") for p in FX_PAIRS):
-        tk = canon
-        return DEFAULT_EXCHANGE, tk, False, ["FX", "FX_IDC", "OANDA", "FOREXCOM", "IDC"]
-
-    # Crypto
-    if raw.upper() in {p.upper() for p in CRYPTO_PAIRS}:
-        tk = raw.upper().replace("/", "")
-        return "CRYPTO", tk, False, CRYPTO_FALLBACKS
-
-    # Index
-    if raw.upper() in {p.upper() for p in INDEX_PAIRS}:
-        tk = raw.upper().replace("/", "")
-        return "INDEX", tk, False, INDEX_FALLBACKS
-
-    # Metal
-    if raw.upper() in {"XAU/USD", "XAUUSD"}:
-        return "METALS", "XAUUSD", False, METAL_FALLBACKS
-    if raw.upper() in {"XAG/USD", "XAGUSD"}:
-        return "METALS", "XAGUSD", False, METAL_FALLBACKS
-
-    # fallback guess
-    tk = re.sub(r"[^A-Z0-9]", "", s)
-    return DEFAULT_EXCHANGE, tk, is_otc, ["FX", "FX_IDC", "OANDA", "FOREXCOM", "IDC"]
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "UserSettings":
+        try:
+            mode = TradeSizeMode(d.get("size_mode", TradeSizeMode.DOLLAR.value))
+        except Exception:
+            mode = TradeSizeMode.DOLLAR
+        return cls(
+            chat_id=int(d["chat_id"]),
+            default_interval=str(d.get("default_interval", DEFAULT_INTERVAL)),
+            default_theme=str(d.get("default_theme", DEFAULT_THEME)),
+            size_mode=mode,
+            size_value=float(d.get("size_value", 1.0)),
+            last_pair=d.get("last_pair"),
+        )
 
 
-# ---------------------------------------------------------------------------
-# Snapshot Fetchers
-# ---------------------------------------------------------------------------
-def _snapshot_url_path(pair: str, tf: str, theme: str, params: Dict[str, str] | None = None) -> str:
-    """
-    Build /snapshot/:pair URL (pair path-escaped).
-    Additional query params optional.
-    """
-    qp = {"tf": tf, "theme": theme}
-    if params:
-        qp.update(params)
-    # safe pair path: percent encode, but keep colon? server supports encoded colon
-    safe_pair = quote(pair, safe="")
-    return f"{SNAPSHOT_BASE_URL}/snapshot/{safe_pair}?{urlencode(qp)}"
+USER_SETTINGS: Dict[int, UserSettings] = {}
 
 
-def _run_url(exchange: str, ticker: str, interval: str, theme: str) -> str:
-    return (
-        f"{SNAPSHOT_BASE_URL}/run?"
-        f"base=chart&exchange={quote(exchange)}&ticker={quote(ticker)}&interval={quote(interval)}&theme={quote(theme)}"
-    )
+def load_state() -> None:
+    if not STATE_FILE.exists():
+        _logger.info("No state file found; starting fresh.")
+        return
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        for k, v in data.items():
+            USER_SETTINGS[int(k)] = UserSettings.from_dict(v)
+        _logger.info("Loaded %d user settings entries.", len(USER_SETTINGS))
+    except Exception as e:
+        _logger.error("State load failed: %s", e)
 
 
-def _attempt_get(url: str) -> httpx.Response:
-    global_throttle_wait()
-    return _http.get(url)
+def save_state() -> None:
+    try:
+        out = {str(k): v.to_dict() for k, v in USER_SETTINGS.items()}
+        STATE_FILE.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    except Exception as e:
+        _logger.error("State save failed: %s", e)
 
 
-def _valid_png(resp: httpx.Response, min_bytes: int = 2048) -> Optional[bytes]:
-    if resp.status_code != 200:
-        return None
-    ctype = resp.headers.get("Content-Type", "")
-    if "image" not in ctype.lower():
-        return None
-    data = resp.content
-    if len(data) < min_bytes:
-        return None
-    if not data.startswith(b"\x89PNG"):
-        return None
-    return data
+atexit.register(save_state)
 
 
-def fetch_snapshot_png_best(pair: str, tf: str, theme: str, exchange: str, ticker: str, alts: List[str]) -> Tuple[bytes, str]:
-    """
-    Try /snapshot/:pair first; if good PNG return it.
-    Else try /run across exchange & alts. Return (png, exchange_used).
+def get_user_settings(chat_id: int) -> UserSettings:
+    s = USER_SETTINGS.get(chat_id)
+    if s is None:
+        s = UserSettings(chat_id=chat_id)
+        USER_SETTINGS[chat_id] = s
+    return s
+
+
+# ------------------------------------------------------------------
+# Trade logger integration (tradelogger.py)
+# ------------------------------------------------------------------
+if tradelogger is not None:
+    STATS = tradelogger.TradeStatsStore(STATS_FILE)
+else:
+    STATS = None  # We'll guard uses.
+
+
+# ------------------------------------------------------------------
+# Screenshot fetch (PNG) + JSON candle fetch
+# ------------------------------------------------------------------
+
+MIN_VALID_PNG = 2000  # bytes
+
+
+async def _http_get_bytes(url: str, timeout: float = 60.0) -> Tuple[int, bytes, str]:
+    try:
+        r = await _http.get(url, timeout=timeout)
+        ct = r.headers.get("content-type", "")
+        data = r.content
+        return r.status_code, data, ct
+    except Exception as e:  # network error
+        return 0, b"", str(e)
+
+
+async def _http_get_json(url: str, timeout: float = 60.0) -> Tuple[int, Any, str]:
+    try:
+        r = await _http.get(url, timeout=timeout)
+        ct = r.headers.get("content-type", "")
+        if r.status_code == 200:
+            try:
+                return r.status_code, r.json(), ct
+            except Exception as je:
+                return r.status_code, None, f"json error: {je}"
+        return r.status_code, None, ct
+    except Exception as e:
+        return 0, None, str(e)
+
+
+async def fetch_snapshot_png_any(
+    pair_display: str,
+    interval: str,
+    theme: str,
+) -> Tuple[bytes, str]:
+    """Try /snapshot/:pair first. If fail or <MIN_VALID_PNG, fallback across mapped exchanges.
+    Returns (png_bytes, exchange_used).
     Raises RuntimeError if all fail.
     """
-    # 1) snapshot
-    snap_url = _snapshot_url_path(pair, tf, theme)
-    try:
-        resp = _attempt_get(snap_url)
-        png = _valid_png(resp)
-        if png:
-            logger.info("Snapshot success via /snapshot (%s, %d bytes).", pair, len(png))
-            return png, f"SNAP:{pair}"
-        else:
-            logger.warning("Snapshot /snapshot failed (%s): %s %s", pair, resp.status_code, resp.text[:100])
-    except Exception as e:
-        logger.warning("Snapshot /snapshot error %s: %s", pair, e)
+    # 1) snapshot direct
+    snap_url = f"{BASE_URL}/snapshot/{pair_display.replace('/', '')}?tf={interval}&theme={theme}"
+    code, data, ct = await _http_get_bytes(snap_url)
+    if code == 200 and ct.startswith("image") and len(data) >= MIN_VALID_PNG:
+        return data, "SNAPSHOT"
 
-    # 2) fallback /run across exchange cascade
+    # 2) fallback by exchange list
+    ex, tk, fallbacks = resolve_symbol(pair_display)
     tried = []
-    last_err = ""
-    cascade = [exchange] + alts
-    # always include DEFAULT_EXCHANGE final
-    if DEFAULT_EXCHANGE not in cascade:
-        cascade.append(DEFAULT_EXCHANGE)
-    for ex in cascade:
-        url = _run_url(ex, ticker, tf, theme)
-        tried.append(ex)
-        try:
-            resp = _attempt_get(url)
-            png = _valid_png(resp)
-            if png:
-                logger.info("Snapshot success via /run %s:%s (%d bytes).", ex, ticker, len(png))
-                return png, ex
-            last_err = f"HTTP {resp.status_code}: {resp.text[:120]}"
-            logger.warning("Snapshot fail %s:%s -> %s", ex, ticker, last_err)
-        except Exception as e:
-            last_err = str(e)
-            logger.warning("Snapshot error %s:%s -> %s", ex, ticker, e)
-
-    raise RuntimeError(f"All exchanges failed for {ticker}. Last error: {last_err}. Tried: {tried}")
-
-
-async def async_fetch_snapshot_png_best(pair: str, tf: str, theme: str, exchange: str, ticker: str, alts: List[str]) -> Tuple[bytes, str]:
-    return await asyncio.to_thread(fetch_snapshot_png_best, pair, tf, theme, exchange, ticker, alts)
-
-
-# ---------------------------------------------------------------------------
-# Snapshot JSON (for /analyze)
-# ---------------------------------------------------------------------------
-def fetch_snapshot_json(pair: str, tf: str, theme: str, candles: int = 100) -> Optional[Dict[str, Any]]:
-    url = _snapshot_url_path(pair, tf, theme, params={"fmt": "json", "candles": str(candles)})
-    try:
-        resp = _attempt_get(url)
-        if resp.status_code == 200:
-            return resp.json()
-        logger.warning("JSON snapshot fail %s: %s %s", pair, resp.status_code, resp.text[:100])
-    except Exception as e:
-        logger.warning("JSON snapshot error %s: %s", pair, e)
-    return None
-
-
-async def async_fetch_snapshot_json(pair: str, tf: str, theme: str, candles: int = 100) -> Optional[Dict[str, Any]]:
-    return await asyncio.to_thread(fetch_snapshot_json, pair, tf, theme, candles)
-
-
-# ---------------------------------------------------------------------------
-# Quick TA
-# ---------------------------------------------------------------------------
-def _extract_closes(candles: List[Dict[str, Any]]) -> List[float]:
-    out = []
-    for c in candles:
-        try:
-            out.append(float(c.get("close") or c.get("c") or 0))
-        except Exception:
-            out.append(0.0)
-    return out
-
-
-def ema(series: List[float], length: int) -> float:
-    if not series:
-        return float("nan")
-    k = 2 / (length + 1)
-    ema_val = series[0]
-    for v in series[1:]:
-        ema_val = v * k + ema_val * (1 - k)
-    return ema_val
-
-
-def rsi(series: List[float], length: int = 14) -> float:
-    if len(series) < length + 1:
-        return float("nan")
-    gains = []
-    losses = []
-    for i in range(1, length + 1):
-        diff = series[-i] - series[-i - 1]
-        if diff > 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(-diff)
-    avg_gain = sum(gains) / length
-    avg_loss = sum(losses) / length
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
-def candle_direction(last_candle: Dict[str, Any]) -> Optional[str]:
-    try:
-        o = float(last_candle.get("open") or last_candle.get("o"))
-        c = float(last_candle.get("close") or last_candle.get("c"))
-    except Exception:
-        return None
-    if c > o:
-        return "UP"
-    if c < o:
-        return "DOWN"
-    return None
-
-
-def analyze_candles(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Minimal TA: EMA(7), EMA(25), diff cross, RSI14, last candle dir.
-    Suggest CALL if fast>slow & rsi>35; PUT if fast<slow & rsi<65; else flat.
-    """
-    closes = _extract_closes(candles)
-    ema7 = ema(closes[-50:], 7) if len(closes) >= 7 else float("nan")
-    ema25 = ema(closes[-100:], 25) if len(closes) >= 25 else float("nan")
-    rsi14 = rsi(closes, 14)
-    ldir = candle_direction(candles[-1]) if candles else None
-
-    suggestion = "FLAT"
-    if ema7 > ema25 and rsi14 > 35:
-        suggestion = "CALL"
-    elif ema7 < ema25 and rsi14 < 65:
-        suggestion = "PUT"
-    else:
-        # fallback last candle bias
-        if ldir == "UP":
-            suggestion = "CALL"
-        elif ldir == "DOWN":
-            suggestion = "PUT"
-
-    # expiry ranking: trending? longer; choppy? shorter
-    if suggestion == "CALL" and ema7 > ema25 and abs(rsi14 - 50) > 10:
-        expiries = ["5m", "15m", "3m", "1m"]
-    elif suggestion == "PUT" and ema7 < ema25 and abs(rsi14 - 50) > 10:
-        expiries = ["5m", "15m", "3m", "1m"]
-    else:
-        expiries = ["1m", "3m", "5m", "15m"]
-
-    return {
-        "ema7": ema7,
-        "ema25": ema25,
-        "rsi14": rsi14,
-        "last_dir": ldir,
-        "suggestion": suggestion,
-        "expiries": expiries,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Inline Keyboard Builders
-# ---------------------------------------------------------------------------
-def chunk_list(lst: List[str], n: int) -> List[List[str]]:
-    return [lst[i : i + n] for i in range(0, len(lst), n)]
-
-
-def build_pairs_keyboard(category: str, page: int = 0, per_page: int = 9) -> InlineKeyboardMarkup:
-    cat_map = {
-        "FX": FX_PAIRS,
-        "OTC": OTC_PAIRS,
-        "CRYPTO": CRYPTO_PAIRS,
-        "INDEX": INDEX_PAIRS,
-        "METAL": METAL_PAIRS,
-        "ALL": ALL_PAIRS,
-    }
-    items = cat_map.get(category, [])
-    total_pages = max(1, (len(items) + per_page - 1) // per_page)
-    page = max(0, min(page, total_pages - 1))
-
-    start = page * per_page
-    end = start + per_page
-    page_items = items[start:end]
-
-    rows: List[List[InlineKeyboardButton]] = []
-    for p in page_items:
-        rows.append([InlineKeyboardButton(p, callback_data=f"PAIR|{p}")])
-
-    nav_row: List[InlineKeyboardButton] = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton("⬅", callback_data=f"PG|{category}|{page-1}"))
-    nav_row.append(InlineKeyboardButton(f"{category} {page+1}/{total_pages}", callback_data="NOP"))
-    if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("➡", callback_data=f"PG|{category}|{page+1}"))
-
-    rows.append(nav_row)
-
-    # category switch row
-    rows.append([
-        InlineKeyboardButton("FX", callback_data="CAT|FX"),
-        InlineKeyboardButton("OTC", callback_data="CAT|OTC"),
-        InlineKeyboardButton("CRYPTO", callback_data="CAT|CRYPTO"),
-        InlineKeyboardButton("INDEX", callback_data="CAT|INDEX"),
-        InlineKeyboardButton("METAL", callback_data="CAT|METAL"),
-    ])
-
-    return InlineKeyboardMarkup(rows)
-
-
-def build_direction_keyboard(pair: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🟢 CALL", callback_data=f"DIR|{pair}|CALL"),
-            InlineKeyboardButton("🔴 PUT",  callback_data=f"DIR|{pair}|PUT"),
-        ],
-        [InlineKeyboardButton("🔍 Analyze", callback_data=f"ANZ|{pair}")],
-    ])
-
-
-def build_expiry_keyboard(pair: str, direction: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("1m", callback_data=f"EXP|{pair}|{direction}|1m"),
-            InlineKeyboardButton("3m", callback_data=f"EXP|{pair}|{direction}|3m"),
-            InlineKeyboardButton("5m", callback_data=f"EXP|{pair}|{direction}|5m"),
-            InlineKeyboardButton("15m", callback_data=f"EXP|{pair}|{direction}|15m"),
-        ],
-        [InlineKeyboardButton("↩ Back", callback_data=f"DIRSEL|{pair}")],
-    ])
-
-
-def build_size_keyboard(pair: str, direction: str, expiry: str, chat_id: int) -> InlineKeyboardMarkup:
-    st = get_state(chat_id)
-    rows: List[List[InlineKeyboardButton]] = []
-    # USD row
-    usd_buttons = []
-    for amt in USD_PRESETS:
-        usd_buttons.append(InlineKeyboardButton(f"${amt}", callback_data=f"SZ|{pair}|{direction}|{expiry}|USD|{amt}"))
-    rows.append(usd_buttons)
-    # PCT row
-    pct_buttons = []
-    for pct in PCT_PRESETS:
-        pct_buttons.append(InlineKeyboardButton(f"{pct:g}%", callback_data=f"SZ|{pair}|{direction}|{expiry}|PCT|{pct}"))
-    rows.append(pct_buttons)
-
-    rows.append([InlineKeyboardButton("↩ Back", callback_data=f"EXPSEL|{pair}|{direction}")])
-    return InlineKeyboardMarkup(rows)
-
-
-def build_confirm_keyboard(pair: str, direction: str, expiry: str, mode: str, amt: Union[int, float]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Confirm Trade", callback_data=f"CONF|{pair}|{direction}|{expiry}|{mode}|{amt}"),
-        ],
-        [
-            InlineKeyboardButton("↩ Size", callback_data=f"EXP|{pair}|{direction}|{expiry}"),
-            InlineKeyboardButton("✖ Cancel", callback_data="CANCEL"),
-        ],
-    ])
-
-
-# ---------------------------------------------------------------------------
-# Pocket Option / UI.Vision Hook
-# ---------------------------------------------------------------------------
-def pocket_trade(pair: str, direction: str, expiry: str, mode: str, amt: Union[int, float], chat_id: int) -> bool:
-    """
-    Fire UI.Vision (or other) webhook if configured.
-    Returns True if accepted (HTTP 2xx), False otherwise.
-    """
-    if not UI_VISION_URL:
-        logger.info("Pocket trade skipped (UI_VISION_URL not set).")
-        return False
-
-    payload = {
-        "macro": UI_VISION_MACRO_NAME,
-        "pair": pair,
-        "direction": direction,
-        "expiry": expiry,
-        "mode": mode,
-        "amount": amt,
-        "chat_id": chat_id,
-        "params": UI_VISION_MACRO_PARAMS_OBJ,
-    }
-    try:
-        r = _http.post(UI_VISION_URL, json=payload)
-        if r.status_code // 100 == 2:
-            logger.info("Pocket trade accepted by UI.Vision endpoint.")
-            return True
-        logger.warning("Pocket trade HTTP %s: %s", r.status_code, r.text[:200])
-    except Exception as e:
-        logger.warning("Pocket trade error: %s", e)
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Telegram Bot Command Handlers
-# ---------------------------------------------------------------------------
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    st = get_state(chat_id)
-    msg = (
-        f"Hi {update.effective_user.first_name or ''} 👋\n\n"
-        f"*{APP_NAME}* v{BOT_VERSION}\n"
-        f"_Default size:_ {st.current_size_display()}\n\n"
-        "Commands:\n"
-        "• /pairs – pick a symbol\n"
-        "• /analyze SYMBOL [tf] [theme]\n"
-        "• /snap SYMBOL [tf] [theme]\n"
-        "• /trade SYMBOL CALL|PUT [expiry]\n"
-        "• /size – change trade size\n"
-        "• /help – usage\n"
-    )
-    await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.MARKDOWN, reply_markup=build_pairs_keyboard("FX"))
-
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "📘 *Help*\n\n"
-        "`/pairs` pick a symbol\n"
-        "`/analyze EUR/USD 5 dark` quick TA\n"
-        "`/snap EUR/USD 1 dark` chart only\n"
-        "`/trade EUR/USD CALL 3m` trade flow\n"
-        "`/size` choose $ or % presets\n\n"
-        "Timeframes: minutes (# | 5m), D/W/M.\n"
-        "Themes: dark|light.\n"
-        "Pocket Option auto‑trade: configure UI_VISION_URL env.\n"
-    )
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
-
-
-async def cmd_size(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    st = get_state(chat_id)
-    msg = f"Current size: {st.current_size_display()}\nPick a new preset:"
-    # reuse size keyboard but we need placeholder pair
-    kb = build_size_keyboard("EUR/USD", "CALL", "5m", chat_id)
-    await update.message.reply_text(msg, reply_markup=kb)
-
-
-async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Select a category / pair:", reply_markup=build_pairs_keyboard("FX"))
-
-
-def _parse_snap_args(args: List[str]) -> Tuple[str, str, str]:
-    symbol = args[0] if args else "EUR/USD"
-    tf = DEFAULT_INTERVAL
-    th = DEFAULT_THEME
-    if len(args) >= 2 and args[1].lower() not in ("dark", "light"):
-        tf = args[1]
-    if len(args) >= 2 and args[-1].lower() in ("dark", "light"):
-        th = args[-1]
-    elif len(args) >= 3 and args[2].lower() in ("dark", "light"):
-        th = args[2]
-    return symbol, tf, th
-
-
-async def cmd_snap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbol, tf, th = _parse_snap_args(context.args)
-    await do_send_snapshot(update.effective_chat.id, context, symbol, tf, th)
-
-
-async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbol, tf, th = _parse_snap_args(context.args)
-    tf = norm_interval(tf)
-    th = norm_theme(th)
-    res = await do_analyze_symbol(update.effective_chat.id, context, symbol, tf, th, send_chart=True)
-    if not res:
-        await context.bot.send_message(update.effective_chat.id, f"❌ Analyze failed for {symbol}.")
-
-
-async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await context.bot.send_message(update.effective_chat.id, "Usage: /trade SYMBOL CALL|PUT [expiry]")
-        return
-    symbol = args[0]
-    direction = parse_direction(args[1] if len(args) >= 2 else None) or "CALL"
-    expiry = args[2] if len(args) >= 3 else "5m"
-    kb = build_size_keyboard(symbol, direction, expiry, update.effective_chat.id)
-    await context.bot.send_message(
-        update.effective_chat.id,
-        f"Trade {symbol} {direction} {expiry} — choose size:",
-        reply_markup=kb,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Command Implementations
-# ---------------------------------------------------------------------------
-async def do_send_snapshot(chat_id: int, context: ContextTypes.DEFAULT_TYPE, symbol: str, tf: str, th: str):
-    if rate_limited(chat_id):
-        await context.bot.send_message(chat_id, "⏳ Too many requests; please wait…")
-        return
-
-    await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
-
-    ex, tk, _is_otc, alts = resolve_symbol(symbol)
-    tf = norm_interval(tf)
-    th = norm_theme(th)
-
-    try:
-        png, used = await async_fetch_snapshot_png_best(symbol, tf, th, ex, tk, alts)
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=png,
-            caption=f"{used}:{tk} • TF {tf} • {th}",
-        )
-        st = get_state(chat_id)
-        st.last_pair = symbol
-        st.last_tf = tf
-        st.last_theme = th
-        save_state()
-    except Exception as e:
-        await context.bot.send_message(chat_id, f"❌ Failed: {symbol} ({e})")
-
-
-async def do_analyze_symbol(
-    chat_id: int,
-    context: ContextTypes.DEFAULT_TYPE,
-    symbol: str,
-    tf: str,
-    th: str,
-    send_chart: bool = False,
+    last_err = None
+    for exch in [ex] + fallbacks:
+        tried.append(exch)
+        url = f"{BASE_URL}/run?exchange={exch}&ticker={tk}&interval={interval}&theme={theme}"
+        code, data, ct = await _http_get_bytes(url)
+        if code == 200 and ct.startswith("image") and len(data) >= MIN_VALID_PNG:
+            return data, exch
+        last_err = f"HTTP {code} {ct} bytes={len(data)}"
+    raise RuntimeError(f"All exchanges failed for {pair_display}: {last_err}. Tried: {tried}")
+
+
+async def fetch_chart_json(
+    pair_display: str,
+    interval: str,
+    lookback: int = 200,
 ) -> Optional[Dict[str, Any]]:
-    tf = norm_interval(tf)
-    th = norm_theme(th)
-
-    data = await async_fetch_snapshot_json(symbol, tf, th, candles=150)
-    candles = data.get("candles") if data else None
-
-    if not candles or len(candles) < 5:
-        logger.warning("No candles for %s; fallback chart only.", symbol)
-        if send_chart:
-            await do_send_snapshot(chat_id, context, symbol, tf, th)
-        return None
-
-    ta = analyze_candles(candles)
-    # build message
-    msg = (
-        f"🔍 *Analysis* {symbol}\n"
-        f"EMA7: {ta['ema7']:.5f}  EMA25: {ta['ema25']:.5f}\n"
-        f"RSI14: {ta['rsi14']:.1f}  LastCandle: {ta['last_dir']}\n"
-        f"➡ Suggest: *{ta['suggestion']}*\n"
-        f"Expiries: {', '.join(ta['expiries'])}\n"
-    )
-    kb = build_direction_keyboard(symbol)
-    await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
-
-    if send_chart:
-        await do_send_snapshot(chat_id, context, symbol, tf, th)
-
-    return ta
+    """Ask Node service for JSON candles if supported.
+    Returns dict with keys: o,h,l,c,v,t (lists) or None.
+    """
+    # Most Node services implement /snapshot/:pair?fmt=json&limit=N
+    base = pair_display.replace("/", "")
+    url = f"{BASE_URL}/snapshot/{base}?fmt=json&limit={lookback}&tf={interval}"
+    code, js, _ = await _http_get_json(url)
+    if code == 200 and isinstance(js, dict):
+        return js
+    return None
 
 
-# ---------------------------------------------------------------------------
-# CallbackQuery Handler
-# ---------------------------------------------------------------------------
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ------------------------------------------------------------------
+# UI keyboards
+# ------------------------------------------------------------------
+
+EXPIRY_BUTTONS = [
+    ("1m", "1m"),
+    ("3m", "3m"),
+    ("5m", "5m"),
+    ("15m", "15m"),
+]
+
+SIZE_DOLLAR_PRESETS = [1, 5, 10, 25, 50, 100]
+SIZE_PERCENT_PRESETS = [1, 2, 5, 10, 25, 50, 100]
+
+
+def build_pairs_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    items = ALL_INSTRUMENTS
+    start = page * PAIRS_PER_PAGE
+    end = start + PAIRS_PER_PAGE
+    chunk = items[start:end]
+    rows = []
+    for p in chunk:
+        rows.append([InlineKeyboardButton(p, callback_data=f"pair:{p}")])
+    nav = []
+    if start > 0:
+        nav.append(InlineKeyboardButton("◀", callback_data=f"pairs:page:{page-1}"))
+    if end < len(items):
+        nav.append(InlineKeyboardButton("▶", callback_data=f"pairs:page:{page+1}"))
+    if nav:
+        rows.append(nav)
+    return InlineKeyboardMarkup(rows)
+
+
+def build_expiry_keyboard(pair: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(txt, callback_data=f"expiry:{pair}:{val}") for txt, val in EXPIRY_BUTTONS]
+    ])
+
+
+def build_size_mode_keyboard(pair: str, expiry: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("$", callback_data=f"sizemode:{pair}:{expiry}:$"),
+            InlineKeyboardButton("%", callback_data=f"sizemode:{pair}:{expiry}:%"),
+        ]
+    ])
+
+
+def build_size_value_keyboard(pair: str, expiry: str, mode: TradeSizeMode) -> InlineKeyboardMarkup:
+    vals = SIZE_DOLLAR_PRESETS if mode == TradeSizeMode.DOLLAR else SIZE_PERCENT_PRESETS
+    rows = []
+    row: List[InlineKeyboardButton] = []
+    for v in vals:
+        row.append(InlineKeyboardButton(str(v), callback_data=f"sizeval:{pair}:{expiry}:{mode.value}:{v}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+def build_theme_keyboard(pair: str, expiry: str, mode: TradeSizeMode, size: float) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Dark", callback_data=f"theme:{pair}:{expiry}:{mode.value}:{size}:dark"), InlineKeyboardButton("Light", callback_data=f"theme:{pair}:{expiry}:{mode.value}:{size}:light")]
+    ])
+
+
+def build_direction_keyboard(pair: str, expiry: str, mode: TradeSizeMode, size: float, theme: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 CALL", callback_data=f"dir:{pair}:{expiry}:{mode.value}:{size}:{theme}:CALL"), InlineKeyboardButton("🔴 PUT", callback_data=f"dir:{pair}:{expiry}:{mode.value}:{size}:{theme}:PUT")],
+        [InlineKeyboardButton("🔍 Analyze", callback_data=f"analyze:{pair}:{expiry}:{mode.value}:{size}:{theme}" )],
+    ])
+
+
+# ------------------------------------------------------------------
+# Inline handler router
+# ------------------------------------------------------------------
+async def inline_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     if not q:
         return
     await q.answer()
     data = q.data or ""
 
-    if data == "NOP":
+    try:
+        if data.startswith("pairs:page:"):
+            pg = int(data.split(":")[2])
+            await q.edit_message_reply_markup(build_pairs_keyboard(pg))
+            return
+
+        if data.startswith("pair:"):
+            pair = data.split(":", 1)[1]
+            # store last_pair
+            us = get_user_settings(update.effective_chat.id)
+            us.last_pair = pair
+            await q.edit_message_text(
+                text=f"Selected *{pair}*. Choose expiry:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_expiry_keyboard(pair),
+            )
+            return
+
+        if data.startswith("expiry:"):
+            _, pair, expiry = data.split(":", 2)
+            await q.edit_message_text(
+                text=f"Pair: *{pair}*\nExpiry: *{expiry}*\nChoose size mode:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_size_mode_keyboard(pair, expiry),
+            )
+            return
+
+        if data.startswith("sizemode:"):
+            _, pair, expiry, mode_char = data.split(":", 3)
+            mode = TradeSizeMode.DOLLAR if mode_char == "$" else TradeSizeMode.PERCENT
+            await q.edit_message_text(
+                text=f"Pair: *{pair}*\nExpiry: *{expiry}*\nSize mode: *{mode.value}*\nSelect amount:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_size_value_keyboard(pair, expiry, mode),
+            )
+            return
+
+        if data.startswith("sizeval:"):
+            _, pair, expiry, mode_char, val = data.split(":", 4)
+            mode = TradeSizeMode.DOLLAR if mode_char == "$" else TradeSizeMode.PERCENT
+            size_val = float(val)
+            await q.edit_message_text(
+                text=f"Pair: *{pair}*\nExpiry: *{expiry}*\nSize: *{val}{mode.value}*\nChoose theme:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_theme_keyboard(pair, expiry, mode, size_val),
+            )
+            return
+
+        if data.startswith("theme:"):
+            _, pair, expiry, mode_char, val, theme = data.split(":", 5)
+            mode = TradeSizeMode.DOLLAR if mode_char == "$" else TradeSizeMode.PERCENT
+            size_val = float(val)
+            await q.edit_message_text(
+                text=(
+                    f"Pair: *{pair}*\n"
+                    f"Expiry: *{expiry}*\n"
+                    f"Size: *{val}{mode.value}*\n"
+                    f"Theme: *{theme}*\nChoose direction or Analyze:"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_direction_keyboard(pair, expiry, mode, size_val, theme),
+            )
+            return
+
+        if data.startswith("analyze:"):
+            _, pair, expiry, mode_char, val, theme = data.split(":", 5)
+            mode = TradeSizeMode.DOLLAR if mode_char == "$" else TradeSizeMode.PERCENT
+            size_val = float(val)
+            await _do_analyze_callback(q, context, pair, expiry, mode, size_val, theme)
+            return
+
+        if data.startswith("dir:"):
+            _, pair, expiry, mode_char, val, theme, direction = data.split(":", 6)
+            mode = TradeSizeMode.DOLLAR if mode_char == "$" else TradeSizeMode.PERCENT
+            size_val = float(val)
+            await _do_trade_callback(q, context, pair, expiry, mode, size_val, theme, direction)
+            return
+
+    except Exception as e:  # catch parse errors
+        _logger.error("inline_router error: %s", e)
+        await q.edit_message_text("Something went wrong. Try /pairs again.")
+
+
+# ------------------------------------------------------------------
+# Inline callback implementations
+# ------------------------------------------------------------------
+async def _do_analyze_callback(q, context, pair: str, expiry: str, mode: TradeSizeMode, size_val: float, theme: str) -> None:
+    chat_id = q.message.chat.id if q.message else q.from_user.id
+    await q.edit_message_text(f"Analyzing {pair}… please wait…")
+    tf = get_user_settings(chat_id).default_interval
+    result = await analyze_symbol(pair, tf)
+    if result is None:
+        text = f"❌ Analysis failed for *{pair}* (no data)."
+    else:
+        text = format_analysis_text(pair, result)
+    await context.bot.send_message(chat_id, text, parse_mode=ParseMode.MARKDOWN)
+    # send chart snapshot
+    await send_snapshot_photo(chat_id, context, pair, tf, theme)
+    # return to direction choose
+    await context.bot.send_message(
+        chat_id,
+        "Select direction to trade:",
+        reply_markup=build_direction_keyboard(pair, expiry, mode, size_val, theme),
+    )
+
+
+async def _do_trade_callback(q, context, pair: str, expiry: str, mode: TradeSizeMode, size_val: float, theme: str, direction: str) -> None:
+    chat_id = q.message.chat.id if q.message else q.from_user.id
+    arrow = "🟢↑" if direction == "CALL" else "🔴↓"
+    txt = f"{arrow} *{pair}* {direction} Expiry {expiry} Size {size_val}{mode.value}"
+    await q.edit_message_text(txt, parse_mode=ParseMode.MARKDOWN)
+    # snapshot
+    tf = get_user_settings(chat_id).default_interval
+    await send_snapshot_photo(chat_id, context, pair, tf, theme, prefix="[TRADE] ")
+    # record trade (sim)
+    if STATS is not None:
+        STATS.record_trade(pair=pair, direction=direction, amount=size_val, amount_mode=mode.value, expiry=expiry, result=None)
+    # optional auto trigger to PocketOption (UI.Vision)
+    await trigger_pocket_trade(pair, direction, expiry, size_val, mode)
+
+
+# ------------------------------------------------------------------
+# Pocket Option trade trigger (UI.Vision REST)
+# ------------------------------------------------------------------
+async def trigger_pocket_trade(pair: str, direction: str, expiry: str, size_val: float, mode: TradeSizeMode) -> None:
+    if not UI_VISION_URL:
         return
-    if data == "CANCEL":
-        await q.edit_message_reply_markup(reply_markup=None)
+    payload = {
+        "macro": UI_VISION_MACRO_NAME,
+        "pair": pair,
+        "direction": direction,
+        "expiry": expiry,
+        "size": size_val,
+        "mode": mode.value,
+        "params": UI_VISION_MACRO_PARAMS,
+    }
+    try:
+        resp = await _http.post(UI_VISION_URL, json=payload)
+        _logger.info("UI.Vision trade POST %s -> %s", UI_VISION_URL, resp.status_code)
+    except Exception as e:
+        _logger.error("UI.Vision trigger error: %s", e)
+
+
+# ------------------------------------------------------------------
+# PNG sending utilities
+# ------------------------------------------------------------------
+async def send_snapshot_photo(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    pair_display: str,
+    interval: str,
+    theme: str,
+    prefix: str = "",
+) -> None:
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+        png, ex_used = await fetch_snapshot_png_any(pair_display, interval, theme)
+        cap = f"{prefix}{ex_used}:{pair_display.replace('/', '')} • TF {interval} • {theme}"
+        await context.bot.send_photo(chat_id=chat_id, photo=png, caption=cap)
+    except Exception as e:
+        _logger.error("send_snapshot_photo error: %s", e)
+        await context.bot.send_message(chat_id, f"❌ Snapshot failed: {pair_display} ({e})")
+
+
+async def send_media_group_chunked(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    pair_list: List[str],
+    interval: str,
+    theme: str,
+    prefix: str = "",
+    chunk_size: int = 5,
+) -> None:
+    media: List[InputMediaPhoto] = []
+    for p in pair_list:
+        try:
+            png, ex_used = await fetch_snapshot_png_any(p, interval, theme)
+            bio = io.BytesIO(png)
+            bio.name = "chart.png"
+            cap = f"{prefix}{ex_used}:{p}"
+            media.append(InputMediaPhoto(media=bio, caption=cap))
+        except Exception as e:
+            _logger.warning("group snapshot failed %s: %s", p, e)
+    if not media:
+        await context.bot.send_message(chat_id, "❌ No charts captured.")
         return
+    # chunk
+    for i in range(0, len(media), chunk_size):
+        chunk = media[i:i+chunk_size]
+        if len(chunk) > 1:
+            for m in chunk[1:]:
+                m.caption = None
+        await context.bot.send_media_group(chat_id=chat_id, media=chunk)
+        await asyncio.sleep(1.0)
 
-    if data.startswith("CAT|"):
-        _, cat = data.split("|", 1)
-        await q.edit_message_text(
-            f"Select {cat} pair:",
-            reply_markup=build_pairs_keyboard(cat, page=0),
-        )
+
+# ------------------------------------------------------------------
+# Analysis logic (uses strategy.py if present else fallback)
+# ------------------------------------------------------------------
+@dataclass
+class AnalysisResult:
+    direction: Optional[str]
+    confidence: float  # 0-1
+    comment: str
+    indicators: Dict[str, Any] = field(default_factory=dict)
+    suggested_expiry: str = "5m"
+
+
+def format_analysis_text(pair: str, ar: AnalysisResult) -> str:
+    dir_txt = ar.direction or "NEUTRAL"
+    arrow = "🟢↑" if ar.direction == "CALL" else ("🔴↓" if ar.direction == "PUT" else "➖")
+    conf_pct = f"{ar.confidence*100:.0f}%" if ar.confidence is not None else "—"
+    lines = [
+        f"📈 *Analysis* — {pair}",
+        f"Direction: {arrow} *{dir_txt}*",        
+        f"Confidence: {conf_pct}",
+        f"Suggested Expiry: *{ar.suggested_expiry}*",
+        "",
+        ar.comment or "No comment.",
+    ]
+    return "\n".join(lines)
+
+
+async def analyze_symbol(pair: str, interval: str) -> Optional[AnalysisResult]:
+    # fetch JSON candles
+    js = await fetch_chart_json(pair, interval)
+    if not js:
+        return None
+    # if strategy module available, call it
+    if strategy is not None and hasattr(strategy, "quick_analyze"):
+        try:
+            return strategy.quick_analyze(pair, js)
+        except Exception as e:
+            _logger.error("strategy.quick_analyze error: %s", e)
+    # fallback naive
+    try:
+        closes = js.get("c") or []
+        if len(closes) < 5:
+            return None
+        last = closes[-1]
+        prev = closes[-5]
+        direction = "CALL" if last > prev else "PUT"
+        conf = min(1.0, abs(last - prev) / (prev * 0.01 + 1e-9))
+        comment = "Naive momentum over last 5 bars."
+        return AnalysisResult(direction=direction, confidence=conf, comment=comment, suggested_expiry="5m")
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------------
+# Command handlers
+# ------------------------------------------------------------------
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    us = get_user_settings(chat_id)
+    msg = (
+        f"Hi {update.effective_user.first_name if update.effective_user else ''} 👋\n\n"
+        "I'm *QuantumTraderBot*. I grab TradingView charts, analyze signals, and can forward trades to Pocket Option (UI.Vision).\n\n"
+        "Commands:\n"
+        "• /pairs – choose an instrument\n"
+        "• /analyze SYMBOL – quick TA & chart\n"
+        "• /trade SYMBOL CALL|PUT expiry – send trade & chart\n"
+        "• /stats – performance summary\n"
+        "• /settings – update defaults\n"
+        "• /help – full reference\n"
+    )
+    await context.bot.send_message(chat_id, msg, parse_mode=ParseMode.MARKDOWN, reply_markup=build_pairs_keyboard(0))
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = (
+        "📘 *Help*\n\n"
+        "`/snap SYMBOL [interval] [theme]` – capture single chart\n"
+        "`/snapmulti S1 S2 ... [interval] [theme]` – capture many\n"
+        "`/analyze SYMBOL [interval]` – TA suggestion\n"
+        "`/trade SYMBOL CALL|PUT [expiry] [size][mode][$|%]` – trade & chart\n"
+        "`/stats` – performance\n"
+        "`/pairs` – interactive instrument picker\n"
+        "`/settings` – adjust defaults\n"
+        "`/next` – placeholder signal watcher\n\n"
+        "Intervals: minutes (#) or D/W/M. Themes: dark|light."
+    )
+    await context.bot.send_message(update.effective_chat.id, msg, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await context.bot.send_message(
+        update.effective_chat.id,
+        "Select a pair/instrument:",
+        reply_markup=build_pairs_keyboard(0),
+    )
+
+
+async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if not args:
+        await context.bot.send_message(update.effective_chat.id, "Usage: /analyze SYMBOL [interval]")
         return
+    symbol = args[0]
+    tf = args[1] if len(args) > 1 else get_user_settings(update.effective_chat.id).default_interval
+    theme = get_user_settings(update.effective_chat.id).default_theme
+    res = await analyze_symbol(symbol, norm_interval(tf))
+    if res is None:
+        await context.bot.send_message(update.effective_chat.id, f"❌ Analysis failed for {symbol}.")
+    else:
+        await context.bot.send_message(update.effective_chat.id, format_analysis_text(symbol, res), parse_mode=ParseMode.MARKDOWN)
+    await send_snapshot_photo(update.effective_chat.id, context, symbol, norm_interval(tf), theme)
 
-    if data.startswith("PG|"):
-        _, cat, pg = data.split("|", 2)
-        page = int(pg)
-        await q.edit_message_reply_markup(reply_markup=build_pairs_keyboard(cat, page))
+
+async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # /trade SYMBOL CALL|PUT expiry [size] [mode]
+    args = context.args
+    if len(args) < 3:
+        await context.bot.send_message(update.effective_chat.id, "Usage: /trade SYMBOL CALL|PUT expiry [size] [$|%]")
         return
+    symbol = args[0]
+    direction = parse_direction(args[1]) or "CALL"
+    expiry = args[2]
+    size_val = float(args[3]) if len(args) > 3 else get_user_settings(update.effective_chat.id).size_value
+    mode = TradeSizeMode.PERCENT if (len(args) > 4 and args[4].startswith("%")) else TradeSizeMode.DOLLAR
+    theme = get_user_settings(update.effective_chat.id).default_theme
+    arrow = "🟢↑" if direction == "CALL" else "🔴↓"
+    txt = f"{arrow} *{symbol}* {direction} Expiry {expiry} Size {size_val}{mode.value}"
+    await context.bot.send_message(update.effective_chat.id, txt, parse_mode=ParseMode.MARKDOWN)
+    tf = get_user_settings(update.effective_chat.id).default_interval
+    await send_snapshot_photo(update.effective_chat.id, context, symbol, tf, theme, prefix="[TRADE] ")
+    if STATS is not None:
+        STATS.record_trade(pair=symbol, direction=direction, amount=size_val, amount_mode=mode.value, expiry=expiry, result=None)
+    await trigger_pocket_trade(symbol, direction, expiry, size_val, mode)
 
-    if data.startswith("PAIR|"):
-        _, pair = data.split("|", 1)
-        await q.edit_message_text(
-            f"{pair}\nChoose direction or analyze.",
-            reply_markup=build_direction_keyboard(pair),
-        )
+
+async def cmd_snap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    symbol = args[0] if args else "EUR/USD"
+    tf = args[1] if len(args) >= 2 else get_user_settings(update.effective_chat.id).default_interval
+    th = args[2] if len(args) >= 3 else get_user_settings(update.effective_chat.id).default_theme
+    await send_snapshot_photo(update.effective_chat.id, context, symbol, norm_interval(tf), norm_theme(th))
+
+
+async def cmd_snapmulti(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if not args:
+        await context.bot.send_message(update.effective_chat.id, "Usage: /snapmulti S1 S2 ... [interval] [theme]")
         return
+    # detect theme last
+    theme = get_user_settings(update.effective_chat.id).default_theme
+    if args[-1].lower() in ("dark","light"):
+        theme = args[-1].lower(); args = args[:-1]
+    tf = get_user_settings(update.effective_chat.id).default_interval
+    if args and re.fullmatch(r"\d+", args[-1]):
+        tf = args[-1]; args = args[:-1]
+    await context.bot.send_message(update.effective_chat.id, f"Capturing {len(args)} charts…")
+    await send_media_group_chunked(update.effective_chat.id, context, args, norm_interval(tf), norm_theme(theme))
 
-    if data.startswith("DIRSEL|"):
-        _, pair = data.split("|", 1)
-        # return to direction keyboard
-        await q.edit_message_reply_markup(reply_markup=build_direction_keyboard(pair))
+
+async def cmd_snapall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await context.bot.send_message(update.effective_chat.id, f"Capturing all {len(ALL_INSTRUMENTS)} instruments… this may take a while.")
+    us = get_user_settings(update.effective_chat.id)
+    await send_media_group_chunked(update.effective_chat.id, context, ALL_INSTRUMENTS, us.default_interval, us.default_theme)
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if STATS is None:
+        await context.bot.send_message(update.effective_chat.id, "No statistics module loaded.")
         return
+    chat_id = update.effective_chat.id
+    summary = STATS.summary_for_chat(chat_id if chat_id else int(DEFAULT_CHAT_ID or 0))
+    txt = tradelogger.format_stats_summary(summary)
+    await context.bot.send_message(chat_id, txt, parse_mode=ParseMode.MARKDOWN)
 
-    if data.startswith("ANZ|"):
-        _, pair = data.split("|", 1)
-        await q.edit_message_text(f"Analyzing {pair}…")
-        tf = DEFAULT_INTERVAL
-        th = DEFAULT_THEME
-        await do_analyze_symbol(q.message.chat.id, context, pair, tf, th, send_chart=True)
+
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    us = get_user_settings(update.effective_chat.id)
+    txt = (
+        "⚙ *Settings*\n\n"
+        f"Default Interval: `{us.default_interval}`\n"
+        f"Default Theme: `{us.default_theme}`\n"
+        f"Trade Size: `{us.size_value}{us.size_mode.value}`\n"
+        f"Last Pair: `{us.last_pair}`\n\n"
+        "Use commands:\n"
+        "/setinterval N | /settheme dark|light | /setsize value [$|%]"
+    )
+    await context.bot.send_message(update.effective_chat.id, txt, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_setinterval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if not args:
+        await context.bot.send_message(update.effective_chat.id, "Usage: /setinterval N")
         return
+    us = get_user_settings(update.effective_chat.id)
+    us.default_interval = norm_interval(args[0])
+    save_state()
+    await context.bot.send_message(update.effective_chat.id, f"Interval set to {us.default_interval}.")
 
-    if data.startswith("DIR|"):
-        _, pair, direction = data.split("|", 2)
-        await q.edit_message_text(
-            f"{pair} {direction}\nPick expiry:",
-            reply_markup=build_expiry_keyboard(pair, direction),
-        )
+
+async def cmd_settheme(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if not args:
+        await context.bot.send_message(update.effective_chat.id, "Usage: /settheme dark|light")
         return
+    us = get_user_settings(update.effective_chat.id)
+    us.default_theme = norm_theme(args[0])
+    save_state()
+    await context.bot.send_message(update.effective_chat.id, f"Theme set to {us.default_theme}.")
 
-    if data.startswith("EXPSEL|"):
-        _, pair, direction = data.split("|", 2)
-        await q.edit_message_reply_markup(reply_markup=build_expiry_keyboard(pair, direction))
+
+async def cmd_setsize(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if not args:
+        await context.bot.send_message(update.effective_chat.id, "Usage: /setsize value [$|%]")
         return
-
-    if data.startswith("EXP|"):
-        _, pair, direction, expiry = data.split("|", 3)
-        chat_id = q.message.chat.id
-        await q.edit_message_text(
-            f"{pair} {direction} {expiry}\nPick size:",
-            reply_markup=build_size_keyboard(pair, direction, expiry, chat_id),
-        )
-        return
-
-    if data.startswith("SZ|"):
-        _, pair, direction, expiry, mode, amt = data.split("|", 5)
-        chat_id = q.message.chat.id
-        st = get_state(chat_id)
-        if mode == "USD":
-            st.mode = "USD"
-            st.usd_size = int(float(amt))
-            disp = f"${st.usd_size}"
-        else:
-            st.mode = "PCT"
-            st.pct_size = float(amt)
-            disp = f"{st.pct_size:g}%"
-        save_state()
-        await q.edit_message_text(
-            f"{pair} {direction} {expiry}\nSize: {disp}\nConfirm?",
-            reply_markup=build_confirm_keyboard(pair, direction, expiry, mode, amt),
-        )
-        return
-
-    if data.startswith("CONF|"):
-        _, pair, direction, expiry, mode, amt = data.split("|", 5)
-        chat_id = q.message.chat.id
-        # Trade dispatch
-        ok = pocket_trade(pair, direction, expiry, mode, float(amt), chat_id)
-        msg = f"✅ Trade sent: {pair} {direction} {expiry} {amt}{mode}\n" if ok else \
-              f"⚠ Trade queued (no broker hook) {pair} {direction} {expiry} {amt}{mode}"
-        await q.edit_message_text(msg)
-        return
+    val = float(args[0])
+    mode = TradeSizeMode.PERCENT if (len(args) > 1 and args[1].startswith("%")) else TradeSizeMode.DOLLAR
+    us = get_user_settings(update.effective_chat.id)
+    us.size_mode = mode
+    us.size_value = val
+    save_state()
+    await context.bot.send_message(update.effective_chat.id, f"Size set to {val}{mode.value}.")
 
 
-# ---------------------------------------------------------------------------
-# Text Echo with Quick Parse
-# ---------------------------------------------------------------------------
-_trade_re = re.compile(r"(?i)^\s*trade\s+([A-Z0-9/_:-]+)\s+(call|put|buy|sell|up|down)\s+([0-9]+m?)")
+async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await context.bot.send_message(update.effective_chat.id, "👀 Watching for next signal (placeholder; feed TradingView alerts to /tv).")
 
 
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Echo fallback (quick parse of inline trade text)
+_trade_re = re.compile(r"(?i)trade\s+([A-Z/:-]+)\s+(call|put|buy|sell|up|down)\s+([0-9]+m?)")
+
+
+async def echo_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     txt = update.message.text.strip()
     m = _trade_re.match(txt)
     if m:
-        pair, dir_word, exp = m.group(1), m.group(2), m.group(3)
-        direction = parse_direction(dir_word) or "CALL"
-        kb = build_size_keyboard(pair, direction, exp, update.effective_chat.id)
-        await update.message.reply_text(f"Trade {pair} {direction} {exp} — choose size:", reply_markup=kb)
+        symbol, dirw, exp = m.group(1), m.group(2), m.group(3)
+        direction = parse_direction(dirw) or "CALL"
+        arrow = "🟢↑" if direction == "CALL" else "🔴↓"
+        await context.bot.send_message(update.effective_chat.id, f"{arrow} *{symbol}* {direction} Expiry {exp}", parse_mode=ParseMode.MARKDOWN)
+        us = get_user_settings(update.effective_chat.id)
+        await send_snapshot_photo(update.effective_chat.id, context, symbol, us.default_interval, us.default_theme, prefix="[TRADE] ")
+        if STATS is not None:
+            STATS.record_trade(symbol, direction, us.size_value, us.size_mode.value, exp, None)
+        await trigger_pocket_trade(symbol, direction, exp, us.size_value, us.size_mode)
         return
-    await update.message.reply_text("I didn't get that. Try `/trade EUR/USD CALL 5m`.", parse_mode=ParseMode.MARKDOWN)
+    await context.bot.send_message(update.effective_chat.id, "Try /help.")
 
 
-# ---------------------------------------------------------------------------
-# Flask TV Webhook
-# ---------------------------------------------------------------------------
+async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await context.bot.send_message(update.effective_chat.id, "❌ Unknown command. Try /help.")
+
+
+# ------------------------------------------------------------------
+# Flask TradingView webhook integration
+# ------------------------------------------------------------------
 flask_app = Flask(__name__)
 
 
-def _parse_tv_payload(data: Dict[str, Any]) -> Dict[str, str]:
-    d = {}
-    d["chat_id"] = str(data.get("chat_id") or DEFAULT_CHAT_ID or "")
-    d["pair"] = str(data.get("pair") or data.get("symbol") or data.get("ticker") or "EUR/USD")
+def _parse_tv_payload(data: dict) -> Dict[str, str]:
+    d: Dict[str, str] = {}
+    d["chat_id"]   = str(data.get("chat_id") or DEFAULT_CHAT_ID or "")
+    d["pair"]      = str(data.get("pair") or data.get("symbol") or data.get("ticker") or "EUR/USD")
     d["direction"] = str(data.get("direction") or "CALL").upper()
-    d["expiry"] = str(data.get("default_expiry_min") or data.get("expiry") or "5m")
-    d["strategy"] = str(data.get("strategy") or "")
-    d["winrate"] = str(data.get("winrate") or "")
+    d["expiry"]    = str(data.get("expiry") or data.get("default_expiry_min") or "")
+    d["strategy"]  = str(data.get("strategy") or "")
+    d["winrate"]   = str(data.get("winrate") or "")
     d["timeframe"] = str(data.get("timeframe") or data.get("tf") or DEFAULT_INTERVAL)
-    d["theme"] = str(data.get("theme") or DEFAULT_THEME)
+    d["theme"]     = str(data.get("theme") or DEFAULT_THEME)
     return d
 
 
-def _tv_send_alert(payload: Dict[str, str]):
-    """
-    Fire Telegram alert (no context). Used by Flask thread.
-    """
-    chat_id = payload["chat_id"]
-    raw_pair = payload["pair"]
-    direction = parse_direction(payload["direction"]) or "CALL"
-    expiry = payload["expiry"]
-    strat = payload["strategy"]
-    winrate = payload["winrate"]
-    tf = norm_interval(payload["timeframe"])
-    theme = norm_theme(payload["theme"])
-    arrow = "🟢↑" if direction == "CALL" else "🔴↓"
-
-    msg = (
-        f"🔔 *TV Alert*\n"
-        f"Pair: {raw_pair}\n"
-        f"Direction: {arrow} {direction}\n"
-        f"Expiry: {expiry}\n"
-        f"Strategy: {strat}\n"
-        f"WinRate: {winrate}\n"
-        f"TF {tf} • {theme}"
-    )
-
-    _tg_send_message(chat_id, msg, parse_mode="Markdown")
-
-    # chart
-    ex, tk, _is_otc, alts = resolve_symbol(raw_pair)
-    try:
-        png, used = fetch_snapshot_png_best(raw_pair, tf, theme, ex, tk, alts)
-        _tg_send_photo(chat_id, png, caption=f"{used}:{tk} • TF {tf} • {theme}")
-    except Exception as e:
-        _tg_send_message(chat_id, f"⚠ Chart snapshot failed for {raw_pair}: {e}")
-
-    # trade button message
-    kb = build_direction_keyboard(raw_pair)
-    _tg_send_message(chat_id, "Tap to Trade:", reply_markup=kb, parse_mode=None)
-
-
-def _tg_send_message(chat_id: str, text: str, parse_mode: Optional[str] = None, reply_markup=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
+def _tv_send_message(chat_id: str, text: str, parse_mode: Optional[str] = None) -> None:
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
-    if reply_markup:
-        payload["reply_markup"] = reply_markup.to_dict()
     try:
-        _http.post(url, json=payload, timeout=30)
+        _sync.post(url, json=payload, timeout=30)
     except Exception as e:
-        logger.warning("tg_send_message error: %s", e)
+        _logger.error("tv_send_message error: %s", e)
 
 
-def _tg_send_photo(chat_id: str, png: bytes, caption: str = ""):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+def _tv_send_photo(chat_id: str, png: bytes, caption: str = "") -> None:
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
     files = {"photo": ("chart.png", png, "image/png")}
     data = {"chat_id": chat_id, "caption": caption}
     try:
-        _http.post(url, data=data, files=files, timeout=60)
+        _sync.post(url, data=data, files=files, timeout=60)
     except Exception as e:
-        logger.warning("tg_send_photo error: %s", e)
+        _logger.error("tv_send_photo error: %s", e)
+
+
+def _handle_tv_alert_sync(data: dict):
+    # auth
+    if WEBHOOK_SECRET:
+        hdr = request.headers.get("X-Webhook-Token", "")
+        body_secret = str(data.get("secret") or data.get("token") or "")
+        if hdr != WEBHOOK_SECRET and body_secret != WEBHOOK_SECRET:
+            _logger.warning("Webhook secret mismatch.")
+            return {"ok": False, "error": "unauthorized"}, 403
+
+    payload = _parse_tv_payload(data)
+    _logger.info("TV payload: %s", payload)
+
+    chat_id   = payload["chat_id"]
+    pair      = payload["pair"]
+    direction = parse_direction(payload["direction"]) or "CALL"
+    expiry    = payload["expiry"]
+    strat     = payload["strategy"]
+    winrate   = payload["winrate"]
+    tf        = norm_interval(payload["timeframe"])
+    theme     = norm_theme(payload["theme"])
+
+    arrow = "🟢↑" if direction == "CALL" else "🔴↓"
+    msg = (
+        f"🔔 *TradingView Alert*\n"
+        f"Pair: {pair}\n"
+        f"Direction: {arrow} {direction}\n"
+        f"Expiry: {expiry}\n"
+        f"Strategy: {strat}\n"
+        f"Win Rate: {winrate}\n"
+        f"TF: {tf} • Theme: {theme}"
+    )
+    _tv_send_message(chat_id, msg, parse_mode="Markdown")
+
+    # try snapshot (sync fallback calls async via anyio would be overkill; do blocking req)
+    try:
+        # use /snapshot first
+        base = pair.replace("/", "")
+        snap_url = f"{BASE_URL}/snapshot/{base}?tf={tf}&theme={theme}"
+        r = _sync.get(snap_url, timeout=60)
+        if r.status_code == 200 and r.headers.get("content-type", "").startswith("image") and len(r.content) >= MIN_VALID_PNG:
+            _tv_send_photo(chat_id, r.content, caption=f"{pair} • TF {tf}")
+        else:
+            # fallback EX
+            ex, tk, fall = resolve_symbol(pair)
+            for exch in [ex] + fall:
+                url = f"{BASE_URL}/run?exchange={exch}&ticker={tk}&interval={tf}&theme={theme}"
+                rr = _sync.get(url, timeout=60)
+                if rr.status_code == 200 and rr.headers.get("content-type","" ).startswith("image") and len(rr.content) >= MIN_VALID_PNG:
+                    _tv_send_photo(chat_id, rr.content, caption=f"{exch}:{tk} • TF {tf}")
+                    break
+            else:
+                _tv_send_message(chat_id, f"⚠ Chart snapshot failed for {pair}.")
+    except Exception as e:
+        _logger.error("TV snapshot sync error: %s", e)
+        _tv_send_message(chat_id, f"⚠ Chart snapshot failed for {pair}: {e}")
+
+    # optional auto trade
+    if AUTO_TRADE_FROM_TV:
+        # minimal default: 1$ CALL
+        try:
+            asyncio.get_event_loop().create_task(trigger_pocket_trade(pair, direction, expiry or "5m", 1.0, TradeSizeMode.DOLLAR))
+        except Exception as e:
+            _logger.error("auto trade spawn error: %s", e)
+
+    return {"ok": True}, 200
 
 
 @flask_app.post("/tv")
 def tv_route():
-    if WEBHOOK_SECRET:
-        hdr = request.headers.get("X-Webhook-Token", "")
-        body_secret = str(request.json.get("secret") or request.json.get("token") or "")
-        if hdr != WEBHOOK_SECRET and body_secret != WEBHOOK_SECRET:
-            return jsonify({"ok": False, "error": "unauthorized"}), 403
     try:
         data = request.get_json(force=True, silent=False)
-    except Exception:
+    except Exception as e:
+        _logger.error("TV /tv invalid JSON: %s", e)
         return jsonify({"ok": False, "error": "invalid_json"}), 400
-    payload = _parse_tv_payload(data)
-    threading.Thread(target=_tv_send_alert, args=(payload,), daemon=True).start()
-    return jsonify({"ok": True}), 200
+    body, code = _handle_tv_alert_sync(data)
+    return jsonify(body), code
 
 
-# backward compat
 @flask_app.post("/webhook")
 def tv_route_alias():
     return tv_route()
 
 
-def start_flask_background():
-    threading.Thread(
-        target=lambda: flask_app.run(
-            host="0.0.0.0",
-            port=TV_WEBHOOK_PORT,
-            debug=False,
-            use_reloader=False,
-            threaded=True,
-        ),
-        daemon=True,
-    ).start()
-    logger.info("Flask TV webhook listening on port %s", TV_WEBHOOK_PORT)
+# ------------------------------------------------------------------
+# Build & run Telegram application
+# ------------------------------------------------------------------
 
-
-# ---------------------------------------------------------------------------
-# Application Builder (telegram)
-# ---------------------------------------------------------------------------
 def build_application() -> Application:
-    # Using Application.builder() directly (avoids Updater bug seen w/ mismatched PTB installs)
-    builder = Application.builder().token(TELEGRAM_BOT_TOKEN).concurrent_updates(True)
+    builder = ApplicationBuilder().token(TOKEN).concurrent_updates(True)
     try:
-        # optional rate limiter if installed w/ extras
-        builder.rate_limiter(AIORateLimiter())
+        builder = builder.rate_limiter(AIORateLimiter())
     except Exception:
         pass
     app = builder.build()
 
-    # Handlers
+    # commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("size", cmd_size))
     app.add_handler(CommandHandler("pairs", cmd_pairs))
-    app.add_handler(CommandHandler("snap", cmd_snap))
     app.add_handler(CommandHandler("analyze", cmd_analyze))
     app.add_handler(CommandHandler("trade", cmd_trade))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(CommandHandler("snap", cmd_snap))
+    app.add_handler(CommandHandler("snapmulti", cmd_snapmulti))
+    app.add_handler(CommandHandler("snapall", cmd_snapall))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("setinterval", cmd_setinterval))
+    app.add_handler(CommandHandler("settheme", cmd_settheme))
+    app.add_handler(CommandHandler("setsize", cmd_setsize))
+    app.add_handler(CommandHandler("next", cmd_next))
+
+    # inline callbacks
+    app.add_handler(CallbackQueryHandler(inline_router))
+
+    # fallback echo text
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo_text))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
+
     return app
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
-def main():
-    print(
-        f"Bot starting… BASE_URL={SNAPSHOT_BASE_URL} | DefaultEX={DEFAULT_EXCHANGE} | WebhookPort={TV_WEBHOOK_PORT} | "
-        f"UI_VISION_URL={UI_VISION_URL} | AUTO_TRADE_FROM_TV={'True' if UI_VISION_URL else 'False'} | SIM_DEBIT=False"
-    )
-    load_state()
-    start_flask_background()
+# ------------------------------------------------------------------
 
+def main() -> None:
+    print(f"Bot starting… BASE_URL={BASE_URL} | DefaultEX={DEFAULT_EXCHANGE} | WebhookPort={TV_WEBHOOK_PORT} | UI_VISION_URL={UI_VISION_URL} | AUTO_TRADE_FROM_TV={AUTO_TRADE_FROM_TV} | SIM_DEBIT={SIM_DEBIT}")
+    load_state()
+
+    # start Flask in background thread
+    import threading
+    threading.Thread(
+        target=lambda: flask_app.run(host="0.0.0.0", port=TV_WEBHOOK_PORT, debug=False, use_reloader=False, threaded=True),
+        daemon=True,
+    ).start()
+    _logger.info("Flask TV webhook listening on port %s", TV_WEBHOOK_PORT)
+
+    # Telegram app
     application = build_application()
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":

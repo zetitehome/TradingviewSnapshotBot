@@ -3,7 +3,7 @@
     "mode": "USD",
     "usd_size": 5,
     "pct_size": 1.0,
-    "last_pair": "SPX",
+    "last_pair": "EUR/JPY-OTC",
     "last_tf": "1",
     "last_theme": "dark"
   }
