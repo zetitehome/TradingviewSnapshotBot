@@ -2,7 +2,7 @@
   "name": "trading-bot",
   "version": "1.0.0",
   "description": "Unofficial TradingView Snapshot Bot 🤖. Generates chart snapshots 📊 and sends them via Telegram.",
-  "start": "trade-trigger-server.js",
+  "main": "trade-trigger-server.js",
   "scripts": {
     "start": "node trade-trigger-server.js"
   },
