@@ -1,30 +1,19 @@
+const db = require('./db');
 const fetch = require('node-fetch');
 
-async function triggerUIVisionMacro(macroName, variables = {}) {
-  const uivisionWebhookURL = 'http://localhost:18000/uivision-webhook'; // <-- Replace with your actual UI.Vision webhook URL
+async function triggerTrade({ symbol, direction, expiry, amount }) {
+  const id = db.prepare('INSERT INTO trades (symbol, direction, expiry, amount) VALUES (?, ?, ?, ?)')
+    .run(symbol, direction, expiry, amount).lastInsertRowid;
 
-  const body = {
-    macro: macroName,
-    variables
-  };
+  // === Replace with your webhook trigger ===
+  await fetch('http://localhost:3333/trade', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, direction, expiry, amount })
+  });
 
-  try {
-    const response = await fetch(uivisionWebhookURL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      throw new Error(`UI.Vision webhook failed: ${response.statusText}`);
-    }
-    return await response.json();
-  } catch (err) {
-    console.error('Error triggering UI.Vision macro:', err);
-    throw err;
-  }
+  return id;
 }
 
-module.exports = {
-  triggerUIVisionMacro
-};
+module.exports = triggerTrade;
+const pairs = require('./pairs');

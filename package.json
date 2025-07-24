@@ -11,5 +11,18 @@
     "body-parser": "^1.20.2",
     "node-fetch": "^3.3.1",
     "puppeteer": "^21.4.1"
-  }
+  },
+  "description": "This is an unofficial TradingviewSnapshotBot 🤖, It can generate Tradingview Chart Snapshots 📊 of your choice and send it over telegram.",
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zetitehome/TradingviewSnapshotBot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/zetitehome/TradingviewSnapshotBot/issues"
+  },
+  "homepage": "https://github.com/zetitehome/TradingviewSnapshotBot#readme"
 }
