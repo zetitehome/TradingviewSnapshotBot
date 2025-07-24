@@ -1,125 +1,55 @@
 {
-  "Name": "TradeMacro",
+  "Name": "PocketOptionAutoTrade",
   "CreationDate": "2025-07-24",
   "Commands": [
     {
       "Command": "store",
-      "Target": "${!cmd_param_pair}",
-      "Value": "pair"
+      "Target": "${!json}",
+      "Value": "tradeData"
     },
     {
-      "Command": "store",
-      "Target": "${!cmd_param_amount}",
-      "Value": "amount"
-    },
-    {
-      "Command": "store",
-      "Target": "${!cmd_param_expiry}",
-      "Value": "expiry"
-    },
-    {
-      "Command": "store",
-      "Target": "${!cmd_param_signal}",
-      "Value": "signal"
-    },
-    {
-      "Command": "store",
-      "Target": "${!cmd_param_stop_loss}",
-      "Value": "stop_loss"
-    },
-    {
-      "Command": "store",
-      "Target": "${!cmd_param_take_profit}",
-      "Value": "take_profit"
-    },
-    {
-      "Command": "click",
-      "Target": "css=div.pair-selector",
+      "Command": "echo",
+      "Target": "Trading Pair: ${tradeData.pair}",
       "Value": ""
     },
     {
-      "Command": "type",
-      "Target": "css=input.pair-search",
-      "Value": "${pair}"
-    },
-    {
-      "Command": "click",
-      "Target": "xpath=//div[contains(text(), '${pair}')]",
+      "Command": "echo",
+      "Target": "Expiry: ${tradeData.expiry} min",
       "Value": ""
     },
     {
-      "Command": "type",
-      "Target": "css=input.trade-amount-input",
-      "Value": "${amount}"
+      "Command": "echo",
+      "Target": "Amount: ${tradeData.amount}",
+      "Value": ""
     },
     {
       "Command": "click",
-      "Target": "css=select.expiry-time-selector",
+      "Target": "css=select#pairSelector",
       "Value": ""
     },
     {
       "Command": "select",
-      "Target": "css=select.expiry-time-selector",
-      "Value": "label=${expiry} min"
-    },
-    {
-      "Command": "if_v2",
-      "Target": "${signal} == 'buy'",
-      "Value": ""
-    },
-    {
-      "Command": "click",
-      "Target": "css=button.buy-button",
-      "Value": ""
-    },
-    {
-      "Command": "end",
-      "Target": "",
-      "Value": ""
-    },
-    {
-      "Command": "if_v2",
-      "Target": "${signal} == 'sell'",
-      "Value": ""
-    },
-    {
-      "Command": "click",
-      "Target": "css=button.sell-button",
-      "Value": ""
-    },
-    {
-      "Command": "end",
-      "Target": "",
-      "Value": ""
-    },
-    {
-      "Command": "if_v2",
-      "Target": "${stop_loss} != ''",
-      "Value": ""
+      "Target": "css=select#pairSelector",
+      "Value": "${tradeData.pair}"
     },
     {
       "Command": "type",
-      "Target": "css=input.stop-loss-input",
-      "Value": "${stop_loss}"
+      "Target": "css=input#amountInput",
+      "Value": "${tradeData.amount}"
     },
     {
-      "Command": "end",
-      "Target": "",
+      "Command": "select",
+      "Target": "css=select#expirySelect",
+      "Value": "${tradeData.expiry}"
+    },
+    {
+      "Command": "click",
+      "Target": "css=button#tradeButton",
       "Value": ""
     },
     {
-      "Command": "if_v2",
-      "Target": "${take_profit} != ''",
-      "Value": ""
-    },
-    {
-      "Command": "type",
-      "Target": "css=input.take-profit-input",
-      "Value": "${take_profit}"
-    },
-    {
-      "Command": "end",
-      "Target": "",
+      "Command": "echo",
+      "Target": "Trade placed successfully",
       "Value": ""
     }
   ]
