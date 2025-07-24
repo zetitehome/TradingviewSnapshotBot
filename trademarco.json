@@ -1,0 +1,41 @@
+{
+  "Name": "TradeMacro",
+  "CreationDate": "2025-07-23",
+  "Commands": [
+    {
+      "Command": "store",
+      "Target": "EURUSD",
+      "Value": "pair"
+    },
+    {
+      "Command": "store",
+      "Target": "5",
+      "Value": "expiry"
+    },
+    {
+      "Command": "store",
+      "Target": "BUY",
+      "Value": "direction"
+    },
+    {
+      "Command": "comment",
+      "Target": "Triggering Pocket Option Trade",
+      "Value": ""
+    },
+    {
+      "Command": "open",
+      "Target": "https://pocketoption.com/en/trading/",
+      "Value": ""
+    },
+    {
+      "Command": "pause",
+      "Target": "3000",
+      "Value": ""
+    },
+    {
+      "Command": "click",
+      "Target": "xpath=//button[contains(text(), '${direction}')]",
+      "Value": ""
+    }
+  ]
+}
