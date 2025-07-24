@@ -9,8 +9,8 @@ const app = express();
 app.use(bodyParser.json());
 app.use(express.static("public"));
 
-const TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN";
-const TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID";
+const TELEGRAM_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
+const TELEGRAM_CHAT_ID = "6337160812";
 
 const bot = new TelegramBot(TELEGRAM_TOKEN);
 
