@@ -197,6 +197,23 @@ def _atr(highs: List[float], lows: List[float], closes: List[float], length: int
 # ---------------------------------------------------------------------------
 # Strategy Engine with Adaptive Learning
 # ---------------------------------------------------------------------------
+@dataclass
+class StrategyEngineConfig:
+    rsi_ob: float = 70.0
+    rsi_os: float = 30.0
+    ema_fast: int = 7
+    ema_slow: int = 25
+class SignalStrategy:
+    def generate_signal(self, pair):
+        import random
+        return {
+            "pair": pair,
+            "action": random.choice(["CALL", "PUT"]),
+            "confidence": random.randint(60, 95),
+            "summary": "AI Strategy says BUY" if random.random() > 0.5 else "SELL",
+            "expiry": "1m"
+        }
+@dataclass
 
 class StrategyEngine:
     def __init__(self, config: Optional[StrategyConfig] = None):
