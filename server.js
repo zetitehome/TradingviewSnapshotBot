@@ -98,3 +98,38 @@ if (!fs.existsSync(capturesDir)) {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
+// In-memory trade logs store (you can switch to DB later)
+let tradeLogs = [];
+
+// POST /trade-result
+// Body: { pair, expiry, amount, entryTime, exitTime, result: "win"|"loss"|"pending" }
+app.post("/trade-result", (req, res) => {
+  const { pair, expiry, amount, entryTime, exitTime, result } = req.body;
+  if (!pair || !expiry || !amount || !entryTime || !exitTime || !result) {
+    return res.status(400).json({ error: "Missing trade result data" });
+  }
+
+  const trade = { pair, expiry, amount, entryTime, exitTime, result, id: Date.now() };
+  tradeLogs.push(trade);
+
+  // Limit logs to last 100 entries
+  if (tradeLogs.length > 100) tradeLogs.shift();
+
+  res.json({ status: "success", trade });
+});
+
+// GET /trade-logs
+app.get("/trade-logs", (req, res) => {
+  res.json(tradeLogs);
+});
+
+// GET /trade-stats
+app.get("/trade-stats", (req, res) => {
+  const total = tradeLogs.length;
+  const wins = tradeLogs.filter(t => t.result === "win").length;
+  const losses = tradeLogs.filter(t => t.result === "loss").length;
+  const winRate = total > 0 ? ((wins / total) * 100).toFixed(2) : 0;
+
+  res.json({ total, wins, losses, winRate });
+});
