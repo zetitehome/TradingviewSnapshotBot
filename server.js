@@ -1,42 +1,33 @@
-// server.js
-const express = require('express');
-const axios = require('axios');
-const bodyParser = require('body-parser');
-const { spawn } = require('child_process');
+const express = require("express");
+const bodyParser = require("body-parser");
+const axios = require("axios");
+
+const TELEGRAM_CHAT_ID = "6337160812";
+const TELEGRAM_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
+
 const app = express();
-const port = 3000;
-
-// Replace with your bot token and chat ID
-const TELEGRAM_BOT_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
-const CHAT_ID = "6337160812";
-
 app.use(bodyParser.json());
 
 app.post("/webhook", async (req, res) => {
-  const data = req.body;
+    const alert = req.body;
 
-  if (!data || !data.signal) {
-    return res.status(400).send("Missing 'signal' in request body.");
-  }
+    try {
+        const msg = `📩 <b>New TradingView Signal</b>\n<b>Pair:</b> ${alert.pair}\n<b>Type:</b> ${alert.direction}\n<b>Win Rate:</b> ${alert.winrate}%\n\nReply "yes" to confirm or "no" to cancel.`;
 
-  const signal = data.signal.toUpperCase();
-  const message = `📡 New Trading Signal Received:\n\n💹 Signal: *${signal}*\n📈 Source: TradingView\n\nConfirm? [yes/no]`;
+        await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: msg,
+            parse_mode: "HTML"
+        });
 
-  try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      chat_id: CHAT_ID,
-      text: message,
-      parse_mode: "Markdown"
-    });
-    res.send("Signal sent to Telegram ✅");
-  } catch (err) {
-    console.error("Telegram sendMessage error:", err.message);
-    res.status(500).send("Failed to send Telegram message ❌");
-  }
+        res.status(200).send("✅ Alert sent to Telegram");
+    } catch (err) {
+        console.error("Telegram Error:", err.message);
+        res.status(500).send("❌ Telegram send failed");
+    }
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Server running on http://localhost:${port}`);
+const PORT = 3000;
+app.listen(PORT, () => {
+    console.log(`📡 Webhook server listening at http://localhost:${PORT}/webhook`);
 });
-// Start the Python script to handle Telegram bot interactions
-const pythonProcess = spawn('python', ['tvsnapshotbot.py']);
