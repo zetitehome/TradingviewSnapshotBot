@@ -3,341 +3,215 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Auto-Trading Dashboard</title>
+  <title>TradingView Signal Dashboard</title>
   <style>
-    body {
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      margin: 0;
-      background: #f5f7fa;
-      color: #333;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 20px;
-    }
-    h1 {
-      margin-bottom: 0.2em;
-      color: #1a73e8;
-    }
-    form {
-      background: white;
-      padding: 20px;
-      border-radius: 10px;
-      box-shadow: 0 8px 15px rgba(0,0,0,0.1);
-      max-width: 480px;
-      width: 100%;
-    }
-    label {
-      display: block;
-      margin-top: 15px;
-      font-weight: 600;
-    }
-    select, input {
-      width: 100%;
-      padding: 10px;
-      margin-top: 6px;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-      font-size: 1em;
-      box-sizing: border-box;
-      transition: border-color 0.3s;
-    }
-    select:focus, input:focus {
-      border-color: #1a73e8;
-      outline: none;
-    }
-    button {
-      margin-top: 20px;
-      padding: 12px 20px;
-      width: 48%;
-      font-weight: 700;
-      font-size: 1em;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background-color 0.3s;
-    }
-    button#analyzeBtn {
-      background-color: #fbbc04;
-      color: #333;
-      margin-right: 4%;
-    }
-    button#tradeBtn {
-      background-color: #1a73e8;
-      color: white;
-    }
-    button:hover {
-      opacity: 0.9;
-    }
-    #log-container {
-      margin-top: 30px;
-      max-width: 480px;
-      width: 100%;
-      background: white;
-      border-radius: 10px;
-      padding: 15px 20px;
-      box-shadow: 0 8px 15px rgba(0,0,0,0.1);
-      max-height: 300px;
-      overflow-y: auto;
-      font-family: monospace;
-      font-size: 0.9em;
-      color: #222;
-    }
-    #log-container h2 {
-      margin-top: 0;
-      color: #1a73e8;
-    }
-    #log-list {
-      list-style: none;
-      padding-left: 0;
-    }
-    #log-list li {
-      margin-bottom: 6px;
-      border-bottom: 1px solid #eee;
-      padding-bottom: 4px;
-    }
-    #stats {
-      margin-top: 20px;
-      max-width: 480px;
-      width: 100%;
-      background: white;
-      border-radius: 10px;
-      padding: 15px 20px;
-      box-shadow: 0 8px 15px rgba(0,0,0,0.1);
-      display: flex;
-      justify-content: space-around;
-      font-weight: 600;
-      color: #1a73e8;
-      font-size: 1.1em;
-    }
-    #captureStatus {
-      margin-top: 10px;
-      font-weight: bold;
-      color: #1a73e8;
-      min-height: 24px;
-    }
-    #lastCapture {
-      max-width: 480px;
-      margin-top: 15px;
-      border-radius: 10px;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.15);
-      display: none;
-    }
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
+    label, select, input, button { display: block; margin: 10px 0; }
+    input, select { padding: 8px; width: 100%; max-width: 300px; }
+    button { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 5px; cursor: pointer; }
+    button:hover { background: #155ab6; }
+    #logs, #stats, #captureStatus { margin-top: 20px; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); max-width: 600px; }
+    ul { padding-left: 20px; }
+    #lastCapture { max-width: 100%; margin-top: 10px; display: none; border-radius: 8px; }
   </style>
 </head>
 <body>
-  <h1>🤖 Auto-Trading Dashboard</h1>
+  <h1>📈 Trading Dashboard</h1>
 
+  <!-- Trade form -->
   <form id="tradeForm">
-    <label for="pairSelect">Select Currency/OTC Pair:</label>
-    <select id="pairSelect" name="pair" title="Select trading pair" required>
-      <!-- Pocket Option Forex + OTC pairs -->
-      <option value="" disabled selected>-- Select Pair --</option>
+    <label for="pair">Currency/OTC Pair</label>
+    <select id="pair" name="pair" required>
       <option value="EUR/USD">EUR/USD</option>
       <option value="GBP/USD">GBP/USD</option>
       <option value="USD/JPY">USD/JPY</option>
-      <option value="USD/CHF">USD/CHF</option>
-      <option value="AUD/USD">AUD/USD</option>
-      <option value="USD/CAD">USD/CAD</option>
-      <option value="NZD/USD">NZD/USD</option>
       <option value="EUR/GBP">EUR/GBP</option>
-      <option value="EUR/JPY">EUR/JPY</option>
-      <option value="GBP/JPY">GBP/JPY</option>
-      <option value="AUD/JPY">AUD/JPY</option>
-      <option value="CHF/JPY">CHF/JPY</option>
-      <option value="EUR/AUD">EUR/AUD</option>
-      <option value="EUR/CAD">EUR/CAD</option>
-      <option value="GBP/CAD">GBP/CAD</option>
-      <option value="AUD/CAD">AUD/CAD</option>
-      <option value="NZD/JPY">NZD/JPY</option>
-      <option value="NZD/CAD">NZD/CAD</option>
-      <!-- OTC Pairs -->
       <option value="OTC/EURJPY">OTC/EURJPY</option>
-      <option value="OTC/EURUSD">OTC/EURUSD</option>
-      <option value="OTC/GBPUSD">OTC/GBPUSD</option>
-      <option value="OTC/USDJPY">OTC/USDJPY</option>
-      <option value="OTC/USDCAD">OTC/USDCAD</option>
-      <option value="OTC/USDCHF">OTC/USDCHF</option>
-      <option value="OTC/AUDUSD">OTC/AUDUSD</option>
-      <option value="OTC/NZDUSD">OTC/NZDUSD</option>
-      <option value="OTC/EURGBP">OTC/EURGBP</option>
-      <option value="OTC/GBPJPY">OTC/GBPJPY</option>
-      <!-- Crypto & Commodities -->
-      <option value="BTC/USD">BTC/USD</option>
-      <option value="ETH/USD">ETH/USD</option>
-      <option value="LTC/USD">LTC/USD</option>
-      <option value="XAU/USD">Gold (XAU/USD)</option>
-      <option value="XAG/USD">Silver (XAG/USD)</option>
+      <!-- add more pairs here -->
     </select>
 
-    <label for="expirySelect">Select Expiry Time:</label>
-    <select id="expirySelect" name="expiry" required>
-      <option value="1">1 Minute</option>
-      <option value="3">3 Minutes</option>
-      <option value="5" selected>5 Minutes</option>
-      <option value="15">15 Minutes</option>
+    <label for="expiry">Expiry Time (min)</label>
+    <select id="expiry" name="expiry" required>
+      <option value="1">1</option>
+      <option value="3">3</option>
+      <option value="5">5</option>
+      <option value="15">15</option>
     </select>
 
-    <label for="amountInput">Trade Amount:</label>
-    <input
-      type="text"
-      id="amountInput"
-      name="amount"
-      placeholder="e.g. 10 or 5%"
-      pattern="^\\d+\\%?$"
-      title="Enter a fixed amount (e.g. 10) or percentage (e.g. 5%)"
-      required
-    />
+    <label for="amount">Amount ($ or %)</label>
+    <input type="text" id="amount" name="amount" placeholder="e.g. 5 or 5%" required />
 
-    <div style="display:flex; justify-content: space-between;">
-      <button id="analyzeBtn" type="button">🔍 Analyze</button>
-      <button id="tradeBtn" type="button">🚀 Place Trade</button>
-    </div>
+    <label for="stopLoss">Stop Loss (%)</label>
+    <input type="number" id="stopLoss" name="stopLoss" min="0" max="100" step="0.1" placeholder="e.g. 2" />
+
+    <label for="takeProfit">Take Profit (%)</label>
+    <input type="number" id="takeProfit" name="takeProfit" min="0" max="100" step="0.1" placeholder="e.g. 5" />
+
+    <button type="submit">Place Trade</button>
   </form>
 
-  <div id="captureStatus"></div>
-  <img id="lastCapture" alt="Last Chart Capture" />
+  <!-- Manual capture -->
+  <button id="captureBtn">📸 Capture Chart & Send to Telegram</button>
+  <div id="captureStatus">Idle</div>
+  <img id="lastCapture" alt="Last captured chart" />
 
-  <div id="log-container">
-    <h2>📄 Trade Log</h2>
-    <ul id="log-list"></ul>
+  <!-- Trade log -->
+  <div id="logs">
+    <h3>📄 Trade Logs</h3>
+    <ul id="tradeLogList"></ul>
   </div>
 
+  <!-- Trade result update -->
+  <div id="resultUpdate" style="margin-top:30px; max-width: 400px;">
+    <h3>Update Trade Result</h3>
+    <label for="tradeTimestamp">Trade Timestamp (ms)</label>
+    <input type="number" id="tradeTimestamp" placeholder="Timestamp from trade log" />
+
+    <label for="tradeResult">Result</label>
+    <select id="tradeResult">
+      <option value="win">Win</option>
+      <option value="loss">Loss</option>
+    </select>
+
+    <button id="updateResultBtn">Update Result</button>
+  </div>
+
+  <!-- Stats -->
   <div id="stats">
-    <div>Total Trades: <span id="statTotal">0</span></div>
-    <div>Wins: <span id="statWins">0</span></div>
-    <div>Losses: <span id="statLosses">0</span></div>
-    <div>Win Rate: <span id="statWinRate">0%</span></div>
+    <h3>📊 Stats</h3>
+    <p>Total Trades: <span id="statTotal">0</span></p>
+    <p>Wins: <span id="statWins">0</span></p>
+    <p>Losses: <span id="statLosses">0</span></p>
+    <p>Win Rate: <span id="statWinRate">0%</span></p>
   </div>
 
-<script>
-  const analyzeBtn = document.getElementById("analyzeBtn");
-  const tradeBtn = document.getElementById("tradeBtn");
-  const captureStatus = document.getElementById("captureStatus");
-  const lastCapture = document.getElementById("lastCapture");
-  const logList = document.getElementById("log-list");
-  const statTotal = document.getElementById("statTotal");
-  const statWins = document.getElementById("statWins");
-  const statLosses = document.getElementById("statLosses");
-  const statWinRate = document.getElementById("statWinRate");
+  <script>
+    async function fetchTradeLogs() {
+      const res = await fetch("/logs");
+      if (!res.ok) return;
+      const logs = await res.json();
+      const ul = document.getElementById("tradeLogList");
+      ul.innerHTML = logs.map(t => {
+        const resultText = t.result ? t.result.toUpperCase() : "Pending";
+        return `<li><b>${new Date(t.timestamp).toLocaleString()}</b> - ${t.pair} - $${t.amount} - Expiry: ${t.expiry}min - Result: <i>${resultText}</i></li>`;
+      }).join("");
+    }
 
-  function logResult(message) {
-    const li = document.createElement("li");
-    li.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
-    logList.prepend(li); // newest first
-  }
+    async function fetchStats() {
+      const res = await fetch("/stats");
+      if (!res.ok) return;
+      const stats = await res.json();
+      document.getElementById("statTotal").textContent = stats.total;
+      document.getElementById("statWins").textContent = stats.wins;
+      document.getElementById("statLosses").textContent = stats.losses;
+      document.getElementById("statWinRate").textContent = stats.winRate + "%";
+    }
 
-  function updateStats(stats) {
-    statTotal.textContent = stats.total || 0;
-    statWins.textContent = stats.wins || 0;
-    statLosses.textContent = stats.losses || 0;
-    statWinRate.textContent = stats.winRate ? stats.winRate + "%" : "0%";
-  }
+    document.getElementById("tradeForm").onsubmit = async (e) => {
+      e.preventDefault();
 
-  async function sendRequest(endpoint, data) {
-    captureStatus.textContent = "Processing...";
-    try {
-      const res = await fetch(endpoint, {
+      const pair = e.target.pair.value;
+      const expiry = e.target.expiry.value;
+      const amount = e.target.amount.value;
+      const stopLoss = e.target.stopLoss.value;
+      const takeProfit = e.target.takeProfit.value;
+
+      const body = { pair, expiry, amount };
+      if (stopLoss) body.stopLoss = Number(stopLoss);
+      if (takeProfit) body.takeProfit = Number(takeProfit);
+
+      const res = await fetch("/trade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify(body),
       });
+
       const json = await res.json();
-      if (res.ok && json.success) {
-        logResult(json.message);
-        updateStats(json.stats || {});
-        if (json.captureUrl) {
-          lastCapture.src = json.captureUrl;
-          lastCapture.style.display = "block";
-        }
+      if (json.success) {
+        alert("Trade placed!");
+        fetchTradeLogs();
+        fetchStats();
       } else {
-        logResult("Error: " + (json.message || "Unknown error"));
-        alert("Error: " + (json.message || "Unknown error"));
+        alert("Error: " + json.message);
       }
-    } catch (error) {
-      logResult("Network or server error: " + error.message);
-      alert("Network or server error: " + error.message);
-    } finally {
-      captureStatus.textContent = "";
+    };
+
+    // Capture chart + send
+    document.getElementById("captureBtn").onclick = async () => {
+      const chartUrl = prompt("Enter Chart URL:");
+      if (!chartUrl) return alert("URL required");
+
+      const statusDiv = document.getElementById("captureStatus");
+      const lastCapture = document.getElementById("lastCapture");
+      lastCapture.style.display = "none";
+      lastCapture.src = "";
+      statusDiv.textContent = "Starting capture...";
+
+      try {
+        const res = await fetch("/start-capture", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: chartUrl }),
+        });
+
+        if (!res.ok) throw new Error("Failed to start capture");
+
+        // Poll capture status
+        let done = false;
+        while (!done) {
+          await new Promise(r => setTimeout(r, 2000));
+          const statusRes = await fetch("/capture-status");
+          const status = await statusRes.json();
+          statusDiv.textContent = status.message || "Working...";
+
+          if (status.state === "done") {
+            done = true;
+            lastCapture.src = status.lastImagePath;
+            lastCapture.style.display = "block";
+            alert("Capture complete and sent!");
+          } else if (status.state === "error") {
+            done = true;
+            alert("Error: " + status.message);
+          }
+        }
+      } catch (err) {
+        statusDiv.textContent = "Error: " + err.message;
+        alert("Error: " + err.message);
+      }
+    };
+
+    // Update trade result button
+    document.getElementById("updateResultBtn").onclick = async () => {
+      const timestamp = Number(document.getElementById("tradeTimestamp").value);
+      const result = document.getElementById("tradeResult").value;
+      if (!timestamp) return alert("Enter a valid timestamp");
+
+      try {
+        const res = await fetch("/trade-result", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ timestamp, result }),
+        });
+        const json = await res.json();
+        if (json.success) {
+          alert(json.message);
+          fetchTradeLogs();
+          fetchStats();
+        } else {
+          alert("Error: " + json.message);
+        }
+      } catch (e) {
+        alert("Network error: " + e.message);
+      }
+    };
+
+    // Load logs + stats initially & every 10 sec
+    async function refreshUI() {
+      await fetchTradeLogs();
+      await fetchStats();
     }
-  }
-
-<div style="margin-top: 30px; background:#fff; padding: 15px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 480px;">
-  <h3>Update Trade Result</h3>
-  <label for="tradeTimestamp">Trade Timestamp (ms):</label>
-  <input type="number" id="tradeTimestamp" placeholder="Timestamp from log" style="width:100%; margin-bottom:10px;" />
-
-  <label for="tradeResult">Result:</label>
-  <select id="tradeResult" style="width:100%; margin-bottom:10px;">
-    <option value="win">Win</option>
-    <option value="loss">Loss</option>
-  </select>
-
-  <button id="updateResultBtn" style="width:100%; padding:10px; background:#1a73e8; color:#fff; border:none; border-radius:6px; cursor:pointer;">Update Result</button>
-</div>
-
-
-  analyzeBtn.onclick = () => {
-    const pair = document.getElementById("pairSelect").value;
-    const expiry = document.getElementById("expirySelect").value;
-    const amount = document.getElementById("amountInput").value.trim();
-    if (!pair) return alert("Please select a trading pair.");
-    if (!amount.match(/^(\d+)(%)?$/)) return alert("Amount must be a number or percentage (e.g. 10 or 5%).");
-
-    sendRequest("/analyze", { pair, expiry, amount });
-  };
-
-  tradeBtn.onclick = () => {
-    const pair = document.getElementById("pairSelect").value;
-    const expiry = document.getElementById("expirySelect").value;
-    const amount = document.getElementById("amountInput").value.trim();
-    if (!pair) return alert("Please select a trading pair.");
-    if (!amount.match(/^(\d+)(%)?$/)) return alert("Amount must be a number or percentage (e.g. 10 or 5%).");
-
-    sendRequest("/trade", { pair, expiry, amount });
-  };
-
-  // Optionally fetch initial stats/logs here
-  async function fetchInitialData() {
-    try {
-      const res = await fetch("/stats");
-      if (!res.ok) throw new Error("Failed to load stats");
-      const data = await res.json();
-      updateStats(data.stats);
-      data.logs.forEach(log => logResult(log));
-    } catch (e) {
-      console.warn("Could not fetch initial data:", e.message);
-    }
-  }
-  fetchInitialData();
-</script>
+    refreshUI();
+    setInterval(refreshUI, 10000);
+  </script>
 </body>
 </html>
-<script>
-  document.getElementById("updateResultBtn").onclick = async () => {
-  const timestamp = Number(document.getElementById("tradeTimestamp").value);
-  const result = document.getElementById("tradeResult").value;
-
-  if (!timestamp) return alert("Please enter a valid trade timestamp");
-
-  try {
-    const res = await fetch("/trade-result", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ timestamp, result }),
-    });
-    const json = await res.json();
-    if (json.success) {
-      alert(json.message);
-      updateStats(json.stats);
-      // Optionally reload logs
-      fetchInitialData();
-    } else {
-      alert("Error: " + json.message);
-    }
-  } catch (e) {
-    alert("Network error: " + e.message);
-  }
-};
-// Add any additional JavaScript functionality here
-  // For example, you can implement real-time updates or more complex interactions

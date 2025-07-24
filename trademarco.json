@@ -1,40 +1,125 @@
 {
   "Name": "TradeMacro",
-  "CreationDate": "2025-07-23",
+  "CreationDate": "2025-07-24",
   "Commands": [
     {
       "Command": "store",
-      "Target": "EURUSD",
+      "Target": "${!cmd_param_pair}",
       "Value": "pair"
     },
     {
       "Command": "store",
-      "Target": "5",
+      "Target": "${!cmd_param_amount}",
+      "Value": "amount"
+    },
+    {
+      "Command": "store",
+      "Target": "${!cmd_param_expiry}",
       "Value": "expiry"
     },
     {
       "Command": "store",
-      "Target": "BUY",
-      "Value": "direction"
+      "Target": "${!cmd_param_signal}",
+      "Value": "signal"
     },
     {
-      "Command": "comment",
-      "Target": "Triggering Pocket Option Trade",
+      "Command": "store",
+      "Target": "${!cmd_param_stop_loss}",
+      "Value": "stop_loss"
+    },
+    {
+      "Command": "store",
+      "Target": "${!cmd_param_take_profit}",
+      "Value": "take_profit"
+    },
+    {
+      "Command": "click",
+      "Target": "css=div.pair-selector",
       "Value": ""
     },
     {
-      "Command": "open",
-      "Target": "https://pocketoption.com/en/trading/",
+      "Command": "type",
+      "Target": "css=input.pair-search",
+      "Value": "${pair}"
+    },
+    {
+      "Command": "click",
+      "Target": "xpath=//div[contains(text(), '${pair}')]",
       "Value": ""
     },
     {
-      "Command": "pause",
-      "Target": "3000",
+      "Command": "type",
+      "Target": "css=input.trade-amount-input",
+      "Value": "${amount}"
+    },
+    {
+      "Command": "click",
+      "Target": "css=select.expiry-time-selector",
+      "Value": ""
+    },
+    {
+      "Command": "select",
+      "Target": "css=select.expiry-time-selector",
+      "Value": "label=${expiry} min"
+    },
+    {
+      "Command": "if_v2",
+      "Target": "${signal} == 'buy'",
       "Value": ""
     },
     {
       "Command": "click",
-      "Target": "xpath=//button[contains(text(), '${direction}')]",
+      "Target": "css=button.buy-button",
+      "Value": ""
+    },
+    {
+      "Command": "end",
+      "Target": "",
+      "Value": ""
+    },
+    {
+      "Command": "if_v2",
+      "Target": "${signal} == 'sell'",
+      "Value": ""
+    },
+    {
+      "Command": "click",
+      "Target": "css=button.sell-button",
+      "Value": ""
+    },
+    {
+      "Command": "end",
+      "Target": "",
+      "Value": ""
+    },
+    {
+      "Command": "if_v2",
+      "Target": "${stop_loss} != ''",
+      "Value": ""
+    },
+    {
+      "Command": "type",
+      "Target": "css=input.stop-loss-input",
+      "Value": "${stop_loss}"
+    },
+    {
+      "Command": "end",
+      "Target": "",
+      "Value": ""
+    },
+    {
+      "Command": "if_v2",
+      "Target": "${take_profit} != ''",
+      "Value": ""
+    },
+    {
+      "Command": "type",
+      "Target": "css=input.take-profit-input",
+      "Value": "${take_profit}"
+    },
+    {
+      "Command": "end",
+      "Target": "",
       "Value": ""
     }
   ]

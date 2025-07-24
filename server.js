@@ -1,165 +1,38 @@
 const express = require("express");
 const bodyParser = require("body-parser");
+const TelegramBot = require("node-telegram-bot-api");
+const puppeteer = require("puppeteer");
 const fs = require("fs");
 const path = require("path");
-const fetch = require("node-fetch"); // For webhook calls
-const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.use(express.static(path.join(__dirname, "public")));
+const app = express();
 app.use(bodyParser.json());
 
-// Pocket Option pairs allowed (same as front-end)
-const validPairs = new Set([
-  "EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","NZD/USD","EUR/GBP","EUR/JPY","GBP/JPY",
-  "AUD/JPY","CHF/JPY","EUR/AUD","EUR/CAD","GBP/CAD","AUD/CAD","NZD/JPY","NZD/CAD",
-  "OTC/EURJPY","OTC/EURUSD","OTC/GBPUSD","OTC/USDJPY","OTC/USDCAD","OTC/USDCHF","OTC/AUDUSD","OTC/NZDUSD","OTC/EURGBP","OTC/GBPJPY",
-  "BTC/USD","ETH/USD","LTC/USD","XAU/USD","XAG/USD"
-]);
+const TELEGRAM_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
+const TELEGRAM_CHAT_ID = "6337160812"; // for sending chart images
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-const TRADE_LOG_PATH = path.join(__dirname, "trade_logs.json");
-
-// Load or init trade logs
 let tradeLogs = [];
-try {
-  tradeLogs = JSON.parse(fs.readFileSync(TRADE_LOG_PATH));
-} catch {
-  tradeLogs = [];
+const LOG_FILE = path.join(__dirname, "tradeLogs.json");
+
+// Load logs from disk on start
+if (fs.existsSync(LOG_FILE)) {
+  tradeLogs = JSON.parse(fs.readFileSync(LOG_FILE));
 }
 
-// Save logs helper
 function saveLogs() {
-  fs.writeFileSync(TRADE_LOG_PATH, JSON.stringify(tradeLogs, null, 2));
+  fs.writeFileSync(LOG_FILE, JSON.stringify(tradeLogs, null, 2));
 }
 
-// Simple trade stats calculation
 function calcStats() {
   const total = tradeLogs.length;
   const wins = tradeLogs.filter(t => t.result === "win").length;
   const losses = tradeLogs.filter(t => t.result === "loss").length;
-  const winRate = total ? Math.round((wins / total) * 100) : 0;
+  const winRate = total ? ((wins / total) * 100).toFixed(2) : "0.00";
   return { total, wins, losses, winRate };
 }
 
-// Helper to validate amount format (fixed or percent)
-function parseAmount(amountStr) {
-  if (typeof amountStr !== "string") return null;
-  const pctMatch = amountStr.match(/^(\d+)%$/);
-  if (pctMatch) return { type: "pct", value: Number(pctMatch[1]) };
-  const numMatch = amountStr.match(/^(\d+)$/);
-  if (numMatch) return { type: "fixed", value: Number(numMatch[1]) };
-  return null;
-}
-
-// UI.Vision webhook trigger (example, adapt to your actual URL and data)
-async function triggerUIVisionMacro(tradeData) {
-  const webhookUrl = "http://localhost:8000/api/triggerMacro"; // Update to your UI.Vision webhook URL
-  try {
-    const res = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(tradeData),
-    });
-    if (!res.ok) throw new Error(`Webhook error: ${res.statusText}`);
-    return true;
-  } catch (err) {
-    console.error("UI.Vision webhook error:", err.message);
-    return false;
-  }
-}
-
-app.post("/analyze", (req, res) => {
-  const { pair, expiry, amount } = req.body;
-  if (!validPairs.has(pair)) {
-    return res.status(400).json({ success: false, message: "Invalid trading pair" });
-  }
-  if (![1,3,5,15].includes(Number(expiry))) {
-    return res.status(400).json({ success: false, message: "Invalid expiry time" });
-  }
-  const parsedAmount = parseAmount(amount);
-  if (!parsedAmount || parsedAmount.value <= 0) {
-    return res.status(400).json({ success: false, message: "Invalid amount format" });
-  }
-
-  // Placeholder: Add your analysis logic here or call your trading algo
-  // For demo, just respond success and log analyze event
-  tradeLogs.unshift({
-    timestamp: Date.now(),
-    action: "analyze",
-    pair,
-    expiry: Number(expiry),
-    amount,
-    result: "pending"
-  });
-  saveLogs();
-
-  res.json({
-    success: true,
-    message: `Analysis started for ${pair} expiring in ${expiry} min with amount ${amount}`,
-    stats: calcStats(),
-  });
-});
-
-app.post("/trade", async (req, res) => {
-  const { pair, expiry, amount } = req.body;
-  if (!validPairs.has(pair)) {
-    return res.status(400).json({ success: false, message: "Invalid trading pair" });
-  }
-  if (![1,3,5,15].includes(Number(expiry))) {
-    return res.status(400).json({ success: false, message: "Invalid expiry time" });
-  }
-  const parsedAmount = parseAmount(amount);
-  if (!parsedAmount || parsedAmount.value <= 0) {
-    return res.status(400).json({ success: false, message: "Invalid amount format" });
-  }
-
-  // Prepare trade payload for UI.Vision webhook
-  const tradeData = {
-    pair,
-    expiry: Number(expiry),
-    amount,
-    timestamp: Date.now(),
-  };
-
-  const triggered = await triggerUIVisionMacro(tradeData);
-
-  // Log trade regardless of webhook success
-  tradeLogs.unshift({
-    timestamp: Date.now(),
-    action: "trade",
-    pair,
-    expiry: Number(expiry),
-    amount,
-    result: triggered ? "sent" : "failed",
-  });
-  saveLogs();
-
-  if (triggered) {
-    res.json({
-      success: true,
-      message: `Trade triggered for ${pair} at expiry ${expiry} min with amount ${amount}`,
-      stats: calcStats(),
-    });
-  } else {
-    res.status(500).json({ success: false, message: "Failed to trigger trade macro" });
-  }
-});
-
-// Endpoint for frontend to get current stats and logs
-app.get("/stats", (req, res) => {
-  const stats = calcStats();
-  const logs = tradeLogs.slice(0, 50).map(log => {
-    const time = new Date(log.timestamp).toLocaleString();
-    return `[${time}] ${log.action.toUpperCase()} - Pair: ${log.pair}, Expiry: ${log.expiry}, Amount: ${log.amount}, Result: ${log.result}`;
-  });
-  res.json({ stats, logs });
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-// POST /trade-result
+// Trade result update endpoint
 app.post("/trade-result", (req, res) => {
   const { timestamp, result } = req.body;
 
@@ -167,15 +40,94 @@ app.post("/trade-result", (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid timestamp or result" });
   }
 
-  // Find trade log by timestamp (exact match)
   const index = tradeLogs.findIndex(t => t.timestamp === timestamp);
   if (index === -1) {
     return res.status(404).json({ success: false, message: "Trade entry not found" });
   }
 
-  // Update trade result
   tradeLogs[index].result = result;
   saveLogs();
 
-  res.json({ success: true, message: `Trade result updated to ${result}`, stats: calcStats() });
+  return res.json({ success: true, message: `Trade result updated to ${result}`, stats: calcStats() });
+});
+
+// Example POST /trade to log trades (simplified)
+app.post("/trade", (req, res) => {
+  const { pair, expiry, amount, stopLoss, takeProfit } = req.body;
+  if (!pair || !expiry || !amount) {
+    return res.status(400).json({ success: false, message: "Missing required trade parameters" });
+  }
+  const timestamp = Date.now();
+
+  tradeLogs.push({ timestamp, pair, expiry, amount, stopLoss, takeProfit, result: null });
+  saveLogs();
+
+  // Optionally trigger UI.Vision macro webhook here with trade data
+
+  return res.json({ success: true, message: "Trade logged", timestamp, stats: calcStats() });
+});
+
+// Trade logs fetch for frontend
+app.get("/logs", (req, res) => {
+  res.json(tradeLogs);
+});
+
+// Stats fetch for frontend
+app.get("/stats", (req, res) => {
+  res.json(calcStats());
+});
+
+// Telegram bot listens for /result command to update trade results
+bot.on("message", (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+
+  if (!text) return;
+
+  if (text.startsWith("/result")) {
+    // Format: /result <timestamp> <win|loss>
+    const parts = text.split(" ");
+    if (parts.length !== 3) {
+      bot.sendMessage(chatId, "Usage: /result <timestamp> <win|loss>");
+      return;
+    }
+    const timestamp = Number(parts[1]);
+    const result = parts[2].toLowerCase();
+
+    if (!timestamp || !["win", "loss"].includes(result)) {
+      bot.sendMessage(chatId, "Invalid timestamp or result.");
+      return;
+    }
+
+    const index = tradeLogs.findIndex(t => t.timestamp === timestamp);
+    if (index === -1) {
+      bot.sendMessage(chatId, "Trade not found.");
+      return;
+    }
+
+    tradeLogs[index].result = result;
+    saveLogs();
+    bot.sendMessage(chatId, `Trade result updated to ${result} for timestamp ${timestamp}`);
+  }
+});
+
+// Puppeteer chart capture + send to Telegram
+async function captureChartAndSend(chatUrl) {
+  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
+  const page = await browser.newPage();
+
+  await page.goto(chatUrl, { waitUntil: "networkidle2" });
+  // Adjust selector for your chart container!
+  const chartElement = await page.$("#chart-container") || await page.$("body");
+  const screenshotBuffer = await chartElement.screenshot({ type: "png" });
+
+  await bot.sendPhoto(TELEGRAM_CHAT_ID, screenshotBuffer, { caption: "Latest Chart Capture" });
+
+  await browser.close();
+}
+
+// Start Express server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
