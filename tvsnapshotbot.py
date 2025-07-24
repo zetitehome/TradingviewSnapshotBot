@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.types import Message, InputFile
+from aiogram.client.bot import DefaultBotProperties
 from aiogram.enums.parse_mode import ParseMode
 from aiohttp import web
 from aiogram.webhook.aiohttp_server import setup_application
@@ -16,7 +16,9 @@ WEBAPP_HOST = "localhost"
 WEBAPP_PORT = 3000
 TELEGRAM_CHAT_ID = 6337160812  # Your Telegram chat ID
 
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.MARKDOWN)
+# Initialize bot with default parse mode
+default_properties = DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+bot = Bot(token=API_TOKEN, default=default_properties)
 dp = Dispatcher()
 
 # === HTML LOG FILE SETUP ===
@@ -49,13 +51,14 @@ def log_to_html(message: str):
     with open(HTML_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(entry)
 
-# === WEBHOOK ROUTE ===
+# === Telegram Commands ===
+
 @dp.message(F.text == "/start")
-async def cmd_start(message: Message):
+async def cmd_start(message: types.Message):
     await message.answer("👋 Quantum Signal Bot is online and ready!")
 
 @dp.message(F.text == "/menu")
-async def cmd_menu(message: Message):
+async def cmd_menu(message: types.Message):
     menu_text = (
         "📊 *Commands:*\n"
         "/signal <pair> - Get signal for a pair\n"
@@ -67,7 +70,7 @@ async def cmd_menu(message: Message):
     await message.answer(menu_text)
 
 @dp.message(F.text == "/stats")
-async def cmd_stats(message: Message):
+async def cmd_stats(message: types.Message):
     # Dummy stats example, replace with real call to your TradeLogger
     stats = {
         "total_profit": "$500",
@@ -90,9 +93,14 @@ async def cmd_stats(message: Message):
     )
     await message.answer(text)
 
-# This example webhook handler accepts POST JSON from TradingView or external signal sender
+# === TradingView webhook handler ===
+
 async def tradingview_webhook(request):
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(status=400, text="Invalid JSON")
+
     signal = data.get("signal", "No signal")
     pair = data.get("pair", "N/A")
     expiry = data.get("expiry", "N/A")
@@ -109,19 +117,25 @@ async def tradingview_webhook(request):
 
     log_to_html(f"Received signal: {signal} for {pair} with expiry {expiry}")
 
-    # Auto-trigger UI.Vision macro here:
-    # Example: subprocess.Popen to run macro URI or executable
-    subprocess.Popen(["cmd", "/c", "start", "", "uivision://run?macro=TradeMacro"])
+    # Example UI.Vision macro trigger:
+    try:
+        subprocess.Popen(["cmd", "/c", "start", "", "uivision://run?macro=TradeMacro"])
+    except Exception as e:
+        logging.error(f"Failed to trigger UI.Vision macro: {e}")
 
     return web.Response(text="OK")
 
-# === Setup aiohttp app ===
+# === Setup aiohttp app and routes ===
+
 app = web.Application()
 app.router.add_post("/callback", tradingview_webhook)
 setup_application(app, dp)
 
-# === Run web server ===
+# === Run the bot ===
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print(f"🚀 Starting bot with webhook at {WEBHOOK_URL}")
     web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
+    with open(HTML_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write("</ul>\n</body>\n</html>")  # Close the HTML tags
