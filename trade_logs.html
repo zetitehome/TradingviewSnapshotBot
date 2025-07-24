@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trade Logs</title>
+</head>
+<body>
+  <h2>Trade Logs</h2>
+  <ul id="logs">
+    <!-- Log entries inserted here -->
+  </ul>
+</body>
+</html>
+<script>
+  // Function to fetch and display trade logs
+  async function fetchTradeLogs() {
+    try {
+      const response = await fetch('trade_logs.json');
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+      const logs = await response.json();
+      const logsContainer = document.getElementById('logs');
+      logsContainer.innerHTML = ''; // Clear existing logs
+
+      logs.forEach(log => {
+        const logItem = document.createElement('li');
+        logItem.textContent = `${log.timestamp}: ${log.message}`;
+        logsContainer.appendChild(logItem);
+      });
+    } catch (error) {
+      console.error('Error fetching trade logs:', error);
+    }
+  }
+
+  // Fetch logs on page load
+  window.onload = fetchTradeLogs;
