@@ -1,52 +1,68 @@
-import logging
-import asyncio
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
-from aiogram.enums.parse_mode import ParseMode
-from aiogram.webhook.aiohttp_server import setup_application
+import os
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InputFile
+from aiogram.utils.webhook import AiohttpWebhook
 from aiohttp import web
+import asyncio
+import subprocess
+from datetime import datetime
 
+# === CONFIG ===
 API_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA"
-CHAT_ID = 6337160812  # Your Telegram Chat ID
+WEBHOOK_URL = "https://6c3090b3d7a5.ngrok-free.app/callback"
+WEBAPP_HOST = 'localhost'
+WEBAPP_PORT = 3000
+TELEGRAM_CHAT_ID = 6337160812  # ← Your chat ID
 
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher()
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+routes = web.RouteTableDef()
 
-@dp.message(F.text == "/start")
-async def start_command(msg: Message):
-    await msg.answer("🤖 Bot is active and listening!")
+# === HTML Logging ===
+HTML_LOG_FILE = "trade_logs.html"
+if not os.path.exists(HTML_LOG_FILE):
+    with open(HTML_LOG_FILE, "w") as f:
+        f.write("<html><head><title>Trade Logs</title></head><body><h2>Trade Logs</h2><ul id='logs'>\n")
 
-@dp.message(F.text.startswith("/trade"))
-async def trade_command(msg: Message):
-    await msg.answer("📥 Trade signal received. Confirm with 'yes' to proceed.")
+def log_to_html(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"<li>[{timestamp}] {message}</li>\n"
+    with open(HTML_LOG_FILE, "a") as f:
+        f.write(entry)
 
-    def check_reply(m: Message):
-        return m.from_user.id == msg.from_user.id and m.text.lower() in ["yes", "no"]
-
-    try:
-        response = await dp.wait_for_message(timeout=10.0, filters=check_reply)
-        if response.text.lower() == "yes":
-            await msg.answer("✅ Trade confirmed and sent.")
-            # Add trading logic here (e.g., trigger UI.Vision macro)
-        else:
-            await msg.answer("❌ Trade cancelled.")
-    except asyncio.TimeoutError:
-        await msg.answer("⏰ Timeout. Auto-executing trade by default.")
-        # Add auto-trade fallback here
-
-# Webhook route for TradingView or ngrok
-async def webhook_handler(request):
+# === Routes ===
+@routes.post('/callback')
+async def on_callback(request):
     data = await request.json()
-    signal = data.get("signal", "No signal")
-    await bot.send_message(CHAT_ID, f"📈 New Signal: <b>{signal}</b>\nReply with 'yes' or 'no' to confirm.")
+    signal = data.get("signal", "Unknown")
+    pair = data.get("pair", "N/A")
+    expiry = data.get("expiry", "N/A")
+    
+    # Compose message
+    msg = f"📥 *Binary Signal Alert*\n\n🟢 *Signal:* {signal}\n💱 *Pair:* {pair}\n⏳ *Expiry:* {expiry}"
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+    
+    # Trigger UI.Vision
+    subprocess.Popen(["cmd", "/c", "start", "", "uivision://run?macro=TradeMacro"])
+
+    # Log to HTML
+    log_to_html(f"Sent: {signal} on {pair} with {expiry} expiry")
+
     return web.Response(text="OK")
 
-def create_app():
-    app = web.Application()
-    app.router.add_post("/callback", webhook_handler)
-    setup_application(app, dp)
-    return app
+# === Start Webhook ===
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    print(f"✅ Webhook set at: {WEBHOOK_URL}")
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    web.run_app(create_app(), port=3000)
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    print("❌ Webhook removed")
+
+app = web.Application()
+app.add_routes(routes)
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+if __name__ == '__main__':
+    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
