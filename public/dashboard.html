@@ -7,6 +7,59 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <button id="captureBtn">📸 Capture Chart & Send</button>
+<div id="captureStatus" style="margin-top: 10px; font-weight: bold;">Idle</div>
+<img id="lastCapture" src="" alt="Last capture" style="max-width: 600px; margin-top: 10px; display:none;" />
+
+<script>
+  const captureBtn = document.getElementById("captureBtn");
+  const captureStatus = document.getElementById("captureStatus");
+  const lastCapture = document.getElementById("lastCapture");
+
+  captureBtn.addEventListener("click", async () => {
+    // Example chart URL - replace with your actual chart page URL
+    const chartUrl = prompt("Enter Chart URL to capture:", "https://your-chart-page-url");
+
+    if (!chartUrl) return alert("Chart URL is required.");
+
+    captureStatus.textContent = "Starting capture...";
+    lastCapture.style.display = "none";
+    lastCapture.src = "";
+
+    try {
+      const response = await fetch("/start-capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: chartUrl }),
+      });
+
+      if (!response.ok) throw new Error("Failed to start capture");
+
+      // Poll status until done/error
+      let done = false;
+      while (!done) {
+        const statusRes = await fetch("/capture-status");
+        const status = await statusRes.json();
+        captureStatus.textContent = status.message || "Working...";
+        if (status.state === "done") {
+          done = true;
+          lastCapture.src = status.lastImagePath;
+          lastCapture.style.display = "block";
+          alert("Capture and Telegram send complete!");
+        } else if (status.state === "error") {
+          done = true;
+          alert("Error: " + status.message);
+        } else {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+    } catch (e) {
+      captureStatus.textContent = "Error: " + e.message;
+      alert("Error: " + e.message);
+    }
+  });
+</script>
+
   <main>
     <h1>📈 Signal Dashboard</h1>
 
@@ -43,7 +96,7 @@
     </select>
 
     <br /><br />
-
+    
     <button onclick="manualAnalyze()">🔍 Analyze</button>
     <button onclick="manualTrade()">📤 Send Trade</button>
 

@@ -1,3 +1,9 @@
 {
-  "extends": ["web-recommended"]
+  "extends": [
+    "web-recommended"
+  ],
+  "hints": {
+    "html-checker": "off",
+    "no-inline-styles": "off"
+  }
 }
