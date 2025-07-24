@@ -12,22 +12,51 @@ db.serialize(() => {
   )`);
 });
 
-function insertTrade(pair, direction, time, cb) {
-  const stmt = db.prepare("INSERT INTO trades (pair, direction, time) VALUES (?, ?, ?)");
-  stmt.run(pair, direction, time, cb);
-  stmt.finalize();
+// Insert a new trade
+function insertTrade(pair, direction, time) {
+  return new Promise((resolve, reject) => {
+    const stmt = db.prepare("INSERT INTO trades (pair, direction, time) VALUES (?, ?, ?)");
+    stmt.run(pair, direction, time, function (err) {
+      if (err) return reject(err);
+      resolve(this.lastID);
+    });
+    stmt.finalize();
+  });
 }
 
+// Update the result of a trade
 function updateResult(id, result) {
-  db.run(`UPDATE trades SET result = ? WHERE id = ?`, [result, id]);
+  return new Promise((resolve, reject) => {
+    db.run(`UPDATE trades SET result = ? WHERE id = ?`, [result, id], function (err) {
+      if (err) return reject(err);
+      resolve(this.changes > 0);
+    });
+  });
 }
 
-function getLatestTrades(limit = 10, cb) {
-  db.all(`SELECT * FROM trades ORDER BY id DESC LIMIT ?`, [limit], cb);
+// Get latest N trades
+function getLatestTrades(limit = 10) {
+  return new Promise((resolve, reject) => {
+    db.all(`SELECT * FROM trades ORDER BY id DESC LIMIT ?`, [limit], (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows);
+    });
+  });
 }
 
-function getStats(cb) {
-  db.all(`SELECT result, COUNT(*) as count FROM trades GROUP BY result`, cb);
+// Get win/loss stats
+function getStats() {
+  return new Promise((resolve, reject) => {
+    db.all(`SELECT result, COUNT(*) as count FROM trades GROUP BY result`, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows);
+    });
+  });
 }
 
-module.exports = { insertTrade, updateResult, getLatestTrades, getStats };
+module.exports = {
+  insertTrade,
+  updateResult,
+  getLatestTrades,
+  getStats
+};
