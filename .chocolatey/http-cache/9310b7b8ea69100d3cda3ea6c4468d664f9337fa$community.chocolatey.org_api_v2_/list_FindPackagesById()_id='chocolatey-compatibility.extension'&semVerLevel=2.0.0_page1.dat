@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<feed xml:base="http://community.chocolatey.org/api/v2/" xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" xmlns="http://www.w3.org/2005/Atom">
+  <title type="text">FindPackagesById</title>
+  <id>http://community.chocolatey.org/api/v2/FindPackagesById</id>
+  <updated>2025-07-18T15:49:07Z</updated>
+  <link rel="self" title="FindPackagesById" href="FindPackagesById" />
+  <entry>
+    <id>http://community.chocolatey.org/api/v2/Packages(Id='chocolatey-compatibility.extension',Version='1.0.0')</id>
+    <title type="text">chocolatey-compatibility.extension</title>
+    <summary type="text">Extension package to provide compatibility with older versions of Chocolatey</summary>
+    <updated>2025-06-30T23:05:00Z</updated>
+    <author>
+      <name>chocolatey-community</name>
+    </author>
+    <link rel="edit-media" title="V2FeedPackage" href="Packages(Id='chocolatey-compatibility.extension',Version='1.0.0')/$value" />
+    <link rel="edit" title="V2FeedPackage" href="Packages(Id='chocolatey-compatibility.extension',Version='1.0.0')" />
+    <category term="CCR.Website.V2FeedPackage" scheme="http://schemas.microsoft.com/ado/2007/08/dataservices/scheme" />
+    <content type="application/zip" src="https://community.chocolatey.org/api/v2/package/chocolatey-compatibility.extension/1.0.0" />
+    <m:properties xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices">
+      <d:Version>1.0.0</d:Version>
+      <d:Title>Chocolatey Compatibility Extension</d:Title>
+      <d:Description>This package provides helper functions that re-introduces helpers that were removed or updated
+in Chocolatey, as well as helpers that are not available in older version of Chocolatey CLI.
+The purpose of the package is to allow older packages to keep functioning even on later versions
+of Chocolatey CLI where certain helpers have been removed.
+
+The helpers included in this package may not have any logic to handle the functionality to keep
+existing, but rather to ensure that packages using the helpers do not stop working.
+
+**WARNING: Do NOT use helpers located in this package for removed functionality, unless absolutely necessary!**</d:Description>
+      <d:Tags>chocolatey-compatibility compatibility extension</d:Tags>
+      <d:Copyright>© 2022 Chocolatey Community Maintainers</d:Copyright>
+      <d:Created m:type="Edm.DateTime">2022-04-07T10:40:58.5</d:Created>
+      <d:Dependencies></d:Dependencies>
+      <d:DownloadCount m:type="Edm.Int32">41368554</d:DownloadCount>
+      <d:VersionDownloadCount m:type="Edm.Int32">44109831</d:VersionDownloadCount>
+      <d:GalleryDetailsUrl>https://community.chocolatey.org/packages/chocolatey-compatibility.extension/1.0.0</d:GalleryDetailsUrl>
+      <d:ReportAbuseUrl>https://community.chocolatey.org/package/ReportAbuse/chocolatey-compatibility.extension/1.0.0</d:ReportAbuseUrl>
+      <d:IconUrl></d:IconUrl>
+      <d:IsLatestVersion m:type="Edm.Boolean">true</d:IsLatestVersion>
+      <d:IsAbsoluteLatestVersion m:type="Edm.Boolean">true</d:IsAbsoluteLatestVersion>
+      <d:IsPrerelease m:type="Edm.Boolean">false</d:IsPrerelease>
+      <d:Language></d:Language>
+      <d:Published m:type="Edm.DateTime">2022-04-07T10:40:58.5</d:Published>
+      <d:LicenseUrl>https://github.com/chocolatey-community/chocolatey-extensions/blob/master/LICENSE.md</d:LicenseUrl>
+      <d:RequireLicenseAcceptance m:type="Edm.Boolean">false</d:RequireLicenseAcceptance>
+      <d:PackageHash>cRfCv902OWoBUREOIdPpWS5y7Hm+qpscBpEeJ0X2IC1qNkoChFKHPM/X8H0jeutO/o/6tD/4uNSmUueRWjJWjQ==</d:PackageHash>
+      <d:PackageHashAlgorithm>SHA512</d:PackageHashAlgorithm>
+      <d:PackageSize m:type="Edm.Int64">13272</d:PackageSize>
+      <d:ProjectUrl>https://github.com/chocolatey-community/chocolatey-extensions</d:ProjectUrl>
+      <d:ReleaseNotes>## 1.0.0
+
+- Add compatibility layer for removed function `Install-ChocolateyDesktopLink`
+- Add compatibility layer for removed function `Write-ChocolateyFailure`
+- Add compatibility layer for removed function `Write-ChocolateySuccess`
+- Add compatibility layer for removed function `Write-FileUpdateLog`
+- Add support for `Get-PackageParameters`.
+- Add support for `Get-UninstallRegistryKey`.</d:ReleaseNotes>
+      <d:ProjectSourceUrl>https://github.com/chocolatey-community/chocolatey-extensions/tree/master/src/chocolatey-compatibility.extension</d:ProjectSourceUrl>
+      <d:PackageSourceUrl></d:PackageSourceUrl>
+      <d:DocsUrl></d:DocsUrl>
+      <d:MailingListUrl></d:MailingListUrl>
+      <d:BugTrackerUrl>https://github.com/chocolatey-community/chocolatey-extensions/issues</d:BugTrackerUrl>
+      <d:IsApproved m:type="Edm.Boolean">true</d:IsApproved>
+      <d:PackageStatus>Approved</d:PackageStatus>
+      <d:PackageSubmittedStatus>Waiting</d:PackageSubmittedStatus>
+      <d:PackageTestResultUrl>https://gist.github.com/choco-bot/97d528c1e743f109f2b6f0efb84d6a95</d:PackageTestResultUrl>
+      <d:PackageTestResultStatus>Passing</d:PackageTestResultStatus>
+      <d:PackageTestResultStatusDate m:type="Edm.DateTime">2025-06-30T23:06:57.8818665Z</d:PackageTestResultStatusDate>
+      <d:PackageValidationResultStatus>Passing</d:PackageValidationResultStatus>
+      <d:PackageValidationResultDate m:type="Edm.DateTime">2022-04-07T11:14:47.427</d:PackageValidationResultDate>
+      <d:PackageCleanupResultDate m:type="Edm.DateTime" m:null="true"></d:PackageCleanupResultDate>
+      <d:PackageReviewedDate m:type="Edm.DateTime">2025-01-06T22:09:14.15</d:PackageReviewedDate>
+      <d:PackageApprovedDate m:type="Edm.DateTime">2025-01-06T22:09:14.15</d:PackageApprovedDate>
+      <d:PackageReviewer>Pauby</d:PackageReviewer>
+      <d:IsDownloadCacheAvailable m:type="Edm.Boolean">false</d:IsDownloadCacheAvailable>
+      <d:DownloadCacheStatus>Checked</d:DownloadCacheStatus>
+      <d:DownloadCacheDate m:type="Edm.DateTime">2022-04-12T17:40:34.733</d:DownloadCacheDate>
+      <d:DownloadCache></d:DownloadCache>
+      <d:PackageScanStatus>NotFlagged</d:PackageScanStatus>
+      <d:PackageScanResultDate m:type="Edm.DateTime">2022-04-07T11:30:32.847</d:PackageScanResultDate>
+      <d:PackageScanFlagResult>None</d:PackageScanFlagResult>
+    </m:properties>
+  </entry>
+  <link rel="next" href="http://community.chocolatey.org/api/v2/FindPackagesById?id='chocolatey-compatibility.extension'&amp;$skiptoken='1751324700520','1.0.0','chocolatey-compatibility.extension'" />
+</feed>

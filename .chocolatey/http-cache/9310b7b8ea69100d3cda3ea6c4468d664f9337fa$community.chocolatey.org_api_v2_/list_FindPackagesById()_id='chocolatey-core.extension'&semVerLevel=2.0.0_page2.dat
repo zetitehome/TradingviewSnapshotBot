@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<feed xml:base="http://community.chocolatey.org/api/v2/" xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" xmlns="http://www.w3.org/2005/Atom">
+  <title type="text">FindPackagesById</title>
+  <id>http://community.chocolatey.org/api/v2/FindPackagesById</id>
+  <updated>2025-07-18T15:47:12Z</updated>
+  <author>
+    <name />
+  </author>
+  <link rel="self" title="FindPackagesById" href="FindPackagesById" />
+</feed>
