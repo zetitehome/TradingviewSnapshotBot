@@ -262,6 +262,21 @@
     }
   }
 
+<div style="margin-top: 30px; background:#fff; padding: 15px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 480px;">
+  <h3>Update Trade Result</h3>
+  <label for="tradeTimestamp">Trade Timestamp (ms):</label>
+  <input type="number" id="tradeTimestamp" placeholder="Timestamp from log" style="width:100%; margin-bottom:10px;" />
+
+  <label for="tradeResult">Result:</label>
+  <select id="tradeResult" style="width:100%; margin-bottom:10px;">
+    <option value="win">Win</option>
+    <option value="loss">Loss</option>
+  </select>
+
+  <button id="updateResultBtn" style="width:100%; padding:10px; background:#1a73e8; color:#fff; border:none; border-radius:6px; cursor:pointer;">Update Result</button>
+</div>
+
+
   analyzeBtn.onclick = () => {
     const pair = document.getElementById("pairSelect").value;
     const expiry = document.getElementById("expirySelect").value;
@@ -299,5 +314,30 @@
 </body>
 </html>
 <script>
-  // Add any additional JavaScript functionality here
+  document.getElementById("updateResultBtn").onclick = async () => {
+  const timestamp = Number(document.getElementById("tradeTimestamp").value);
+  const result = document.getElementById("tradeResult").value;
+
+  if (!timestamp) return alert("Please enter a valid trade timestamp");
+
+  try {
+    const res = await fetch("/trade-result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timestamp, result }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      alert(json.message);
+      updateStats(json.stats);
+      // Optionally reload logs
+      fetchInitialData();
+    } else {
+      alert("Error: " + json.message);
+    }
+  } catch (e) {
+    alert("Network error: " + e.message);
+  }
+};
+// Add any additional JavaScript functionality here
   // For example, you can implement real-time updates or more complex interactions

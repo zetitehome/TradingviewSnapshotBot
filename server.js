@@ -158,3 +158,24 @@ app.get("/stats", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// POST /trade-result
+app.post("/trade-result", (req, res) => {
+  const { timestamp, result } = req.body;
+
+  if (!timestamp || !["win", "loss"].includes(result)) {
+    return res.status(400).json({ success: false, message: "Invalid timestamp or result" });
+  }
+
+  // Find trade log by timestamp (exact match)
+  const index = tradeLogs.findIndex(t => t.timestamp === timestamp);
+  if (index === -1) {
+    return res.status(404).json({ success: false, message: "Trade entry not found" });
+  }
+
+  // Update trade result
+  tradeLogs[index].result = result;
+  saveLogs();
+
+  res.json({ success: true, message: `Trade result updated to ${result}`, stats: calcStats() });
+});
