@@ -6,7 +6,7 @@ async function triggerTrade({ symbol, direction, expiry, amount }) {
     .run(symbol, direction, expiry, amount).lastInsertRowid;
 
   // === Replace with your webhook trigger ===
-  await fetch('http://localhost:3333/trade', {
+  await fetch('http://localhost:3001/trade', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ symbol, direction, expiry, amount })
