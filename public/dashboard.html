@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TradingView Signal Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main>
+    <h1>📈 Signal Dashboard</h1>
+
+ <form action="/capture" method="POST">
+  <label for="pairSelect">Select Pair:</label>
+  <select id="pairSelect" name="pair" title="Select trading pair">
+    <option value="FX:EURUSD">EUR/USD</option>
+    <option value="FX:GBPUSD">GBP/USD</option>
+    <!-- Add more pairs -->
+  </select>
+
+  <label for="timeframeSelect">Select Timeframe:</label>
+  <select id="timeframeSelect" name="timeframe" title="Select timeframe">
+    <option value="1">1 Minute</option>
+    <option value="5">5 Minutes</option>
+  </select>
+
+  <button type="submit">Capture Chart</button>
+</form>
+ 
+    </select>
+
+    <br /><br />
+
+    <label for="amount">Amount ($):</label>
+    <input type="number" id="amount" name="amount" placeholder="5" min="1" />
+
+    <label for="expiry">Expiry (min):</label>
+    <select id="expiry" name="expiry" title="Expiry Time">
+      <option value="1">1</option>
+      <option value="3">3</option>
+      <option value="5">5</option>
+      <option value="15">15</option>
+    </select>
+
+    <br /><br />
+
+    <button onclick="manualAnalyze()">🔍 Analyze</button>
+    <button onclick="manualTrade()">📤 Send Trade</button>
+
+    <div id="result-log" style="margin-top: 20px;">
+      <h3>Trade Log:</h3>
+      <ul id="log-list"></ul>
+    </div>
+  </main>
+
+  <script src="/script.js"></script>
+</body>
+</html>
+<script>
+  function manualAnalyze() {
+    const pair = document.getElementById('pair-select').value;
+    const amount = document.getElementById('amount').value;
+    const expiry = document.getElementById('expiry').value;
+
+    // Simulate analysis
+    const result = `Analyzed ${pair} with amount $${amount} for ${expiry} minutes.`;
+    logResult(result);
+  }
+
+  function manualTrade() {
+    const pair = document.getElementById('pair-select').value;
+    const amount = document.getElementById('amount').value;
+    const expiry = document.getElementById('expiry').value;
+
+    // Simulate trade
+    const result = `Trade sent for ${pair} with amount $${amount} for ${expiry} minutes.`;
+    logResult(result);
+  }
+
+  function logResult(message) {
+    const logList = document.getElementById('log-list');
+    const listItem = document.createElement('li');
+    listItem.textContent = message;
+    logList.appendChild(listItem);
+  }

@@ -1,33 +1,41 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");
-
-const TELEGRAM_CHAT_ID = "6337160812";
-const TELEGRAM_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
-
+const express = require('express');
+const fs = require('fs');
+const bodyParser = require('body-parser');
+const cors = require('cors');
 const app = express();
+const port = 3000;
+
+const logsFile = './logs.json';
+if (!fs.existsSync(logsFile)) fs.writeFileSync(logsFile, '[]');
+
+app.use(cors());
 app.use(bodyParser.json());
+app.use(express.static('public'));
 
-app.post("/webhook", async (req, res) => {
-    const alert = req.body;
+function logTrade(entry) {
+  const logs = JSON.parse(fs.readFileSync(logsFile));
+  logs.unshift(`[${new Date().toISOString()}] ${entry}`);
+  fs.writeFileSync(logsFile, JSON.stringify(logs.slice(0, 100), null, 2));
+}
 
-    try {
-        const msg = `📩 <b>New TradingView Signal</b>\n<b>Pair:</b> ${alert.pair}\n<b>Type:</b> ${alert.direction}\n<b>Win Rate:</b> ${alert.winrate}%\n\nReply "yes" to confirm or "no" to cancel.`;
-
-        await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-            chat_id: TELEGRAM_CHAT_ID,
-            text: msg,
-            parse_mode: "HTML"
-        });
-
-        res.status(200).send("✅ Alert sent to Telegram");
-    } catch (err) {
-        console.error("Telegram Error:", err.message);
-        res.status(500).send("❌ Telegram send failed");
-    }
+app.get('/logs', (req, res) => {
+  const logs = JSON.parse(fs.readFileSync(logsFile));
+  res.json(logs);
 });
 
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`📡 Webhook server listening at http://localhost:${PORT}/webhook`);
+app.post('/analyze', (req, res) => {
+  const { pair, expiry } = req.body;
+  logTrade(`Manual analysis requested for ${pair} with ${expiry} min expiry.`);
+  res.sendStatus(200);
+});
+
+app.post('/trade', (req, res) => {
+  const { pair, expiry, amount } = req.body;
+  logTrade(`Manual trade initiated: ${pair} | Expiry: ${expiry}min | Amount: ${amount}`);
+  // Placeholder for UI.Vision webhook logic
+  res.sendStatus(200);
+});
+
+app.listen(port, () => {
+  console.log(`✅ Dashboard backend running at http://localhost:${port}`);
 });

@@ -1,0 +1,15 @@
+{
+  "6337160812": {
+    "mode": "USD",
+    "usd_size": 5,
+    "pct_size": 1.0,
+    "last_pair": "EUR/JPY-OTC",
+    "last_tf": "1",
+    "last_theme": "dark",
+    "post_capture_action": {
+      "send_to_telegram": true,
+      "telegram_chat_id": "6337160812",
+      "caption": "📸 Chart captured for EUR/JPY-OTC (1m timeframe)."
+    }
+  }
+}
