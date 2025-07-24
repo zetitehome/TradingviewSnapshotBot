@@ -10,8 +10,8 @@ const TelegramBot = require('node-telegram-bot-api');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-const BOT_TOKEN = process.env.BOT_TOKEN || "YOUR_TELEGRAM_BOT_TOKEN";
-const ALERT_CHAT_ID = process.env.ALERT_CHAT_ID || "YOUR_CHAT_ID";
+const BOT_TOKEN = process.env.BOT_TOKEN || "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
+const ALERT_CHAT_ID = process.env.ALERT_CHAT_ID || "6337160812";
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN not set.");
 
