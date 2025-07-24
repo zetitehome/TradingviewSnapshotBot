@@ -1,42 +1,52 @@
+import logging
 import asyncio
-from aiogram import Bot, Dispatcher, types, Router
-from aiogram.enums import ParseMode
+from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
-from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.enums.parse_mode import ParseMode
+from aiogram.webhook.aiohttp_server import setup_application
+from aiohttp import web
 
-TELEGRAM_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA"
-USER_CHAT_ID = 6337160812
+API_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA"
+CHAT_ID = 6337160812  # Your Telegram Chat ID
 
-bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
-router = Router()
+bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
-# Handle incoming messages
-@router.message()
-async def handle_message(message: Message):
-    if message.chat.id != USER_CHAT_ID:
-        await message.answer("Access denied.")
-        return
+@dp.message(F.text == "/start")
+async def start_command(msg: Message):
+    await msg.answer("🤖 Bot is active and listening!")
 
-    if "analyze" in message.text.lower():
-        await message.answer("📸 Capturing chart screenshot...")
-        # Trigger screenshot logic or webhook here
-        await message.answer("Do you want to place this trade? (yes/no)")
+@dp.message(F.text.startswith("/trade"))
+async def trade_command(msg: Message):
+    await msg.answer("📥 Trade signal received. Confirm with 'yes' to proceed.")
 
-    elif message.text.lower() == "yes":
-        await message.answer("✅ Trade confirmed! Executing UI.Vision macro...")
-        # Trigger UI.Vision or webhook here
+    def check_reply(m: Message):
+        return m.from_user.id == msg.from_user.id and m.text.lower() in ["yes", "no"]
 
-    elif message.text.lower() == "no":
-        await message.answer("❌ Trade cancelled.")
+    try:
+        response = await dp.wait_for_message(timeout=10.0, filters=check_reply)
+        if response.text.lower() == "yes":
+            await msg.answer("✅ Trade confirmed and sent.")
+            # Add trading logic here (e.g., trigger UI.Vision macro)
+        else:
+            await msg.answer("❌ Trade cancelled.")
+    except asyncio.TimeoutError:
+        await msg.answer("⏰ Timeout. Auto-executing trade by default.")
+        # Add auto-trade fallback here
 
-    else:
-        await message.answer("Send /analyze to start.")
+# Webhook route for TradingView or ngrok
+async def webhook_handler(request):
+    data = await request.json()
+    signal = data.get("signal", "No signal")
+    await bot.send_message(CHAT_ID, f"📈 New Signal: <b>{signal}</b>\nReply with 'yes' or 'no' to confirm.")
+    return web.Response(text="OK")
 
-async def main():
-    dp = Dispatcher()
-    dp.include_router(router)
-    await dp.start_polling(bot)
+def create_app():
+    app = web.Application()
+    app.router.add_post("/callback", webhook_handler)
+    setup_application(app, dp)
+    return app
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    
+    logging.basicConfig(level=logging.INFO)
+    web.run_app(create_app(), port=3000)
