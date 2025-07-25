@@ -1,145 +1,151 @@
-require('dotenv').config();
-const express = require('express');
-const bodyParser = require('body-parser');
-const axios = require('axios');
+const express = require("express");
+const bodyParser = require("body-parser");
+const fs = require("fs");
+const axios = require("axios");
 
 const app = express();
+const PORT = 3000;
+
+const TELEGRAM_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
+const TELEGRAM_CHAT_ID = "6337160812";
+const UI_VISION_WEBHOOK = "http://localhost:5000/run-macro";
+
+let loopCount = 0;
+let tradeHistory = loadTradeHistory(); // Load from file
+
 app.use(bodyParser.json());
 
-// === ENV VARIABLES ===
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const SNAPSHOT_BASE_URL = process.env.SNAPSHOT_BASE_URL || 'http://localhost:10000';
-const UI_VISION_URL = process.env.UI_VISION_URL;
-const MACRO_NAME = process.env.UI_VISION_MACRO_NAME || 'PocketTrade';
-const MACRO_PARAMS_JSON = JSON.parse(process.env.UI_VISION_MACRO_PARAMS_JSON || '{}');
+// === Command Handlers ===
+app.post("/telegram", async (req, res) => {
+  const message = req.body.message?.text || "";
+  const chatId = req.body.message?.chat.id;
 
-// === DEFAULT SETTINGS ===
-const defaultExchange = process.env.DEFAULT_EXCHANGE || 'FX';
-const defaultInterval = process.env.DEFAULT_INTERVAL || '1';
-const defaultTheme = process.env.DEFAULT_THEME || 'dark';
+  if (!chatId) return res.sendStatus(200);
 
-let autoTradeEnabled = false;
+  if (message.startsWith("/trade")) {
+    const parts = message.split(" ");
+    if (parts.length < 5) {
+      return sendTelegram("Usage: /trade EURUSD buy 5 3", chatId);
+    }
 
-// === PAIR CONFIG ===
-const pairConfigs = {
-  'EUR/USD': { expiry: 3, strategy: 'EMA+Candle' },
-  'GBP/USD': { expiry: 5, strategy: 'RSI+Pinbar' },
-  'OTC_EURUSD': { expiry: 1, strategy: 'SMA+Doji' },
-};
+    const [_, pair, direction, amount, expiry] = parts;
 
-// === UTILITIES ===
-const sendTelegram = async (msg) => {
-  try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: CHAT_ID,
-      text: msg,
-      parse_mode: 'HTML',
-    });
-  } catch (err) {
-    console.error('Telegram error:', err.message);
+    const tradeData = {
+      pair,
+      direction,
+      amount,
+      expiry,
+      confidence: 100,
+      auto: false,
+    };
+
+    await runTrade(tradeData);
+    saveTrade(tradeData, "manual");
+
+    return sendTelegram(`📊 Manual Trade: ${pair} ${direction.toUpperCase()} ($${amount}, ${expiry}m)`, chatId);
   }
-};
 
-const sendTradeToUIVision = async (symbol, interval, source = 'Manual') => {
-  const config = pairConfigs[symbol] || { expiry: 3, strategy: 'Default' };
-  const payload = {
-    symbol,
-    interval,
-    expiry: config.expiry,
-    strategy: config.strategy,
-    source,
-    exchange: defaultExchange,
-    theme: defaultTheme,
-  };
-
-  const finalMacroParams = {
-    ...MACRO_PARAMS_JSON,
-    ...payload,
-  };
-
-  try {
-    await axios.post(`${UI_VISION_URL}`, {
-      macro: MACRO_NAME,
-      parameters: finalMacroParams,
-    });
-
-    await sendTelegram(`✅ Trade sent for <b>${symbol}</b> (Strategy: <i>${payload.strategy}</i>, Source: <i>${source}</i>, Expiry: <i>${payload.expiry}m</i>)`);
-  } catch (err) {
-    console.error('UI.Vision error:', err.message);
-    await sendTelegram(`❌ <b>Trade failed</b> for <b>${symbol}</b>: ${err.message}`);
-    retryTrade(payload); // Retry on fail
-  }
-};
-
-const retryTrade = async (payload) => {
-  setTimeout(() => {
-    sendTelegram(`🔁 Retrying trade for <b>${payload.symbol}</b>...`);
-    sendTradeToUIVision(payload.symbol, payload.interval, payload.source);
-  }, 5000);
-};
-
-// === TELEGRAM COMMANDS ===
-app.post(`/telegram/${TELEGRAM_TOKEN}`, async (req, res) => {
-  const msg = req.body.message;
-  if (!msg || !msg.text) return res.sendStatus(200);
-
-  const text = msg.text.toLowerCase();
-  const from = msg.chat.id;
-
-  if (text.startsWith('/start')) {
-    await sendTelegram(`🤖 Bot Ready.\nUse /analyze or /auto ON/OFF`);
-  } else if (text.startsWith('/auto')) {
-    autoTradeEnabled = text.includes('on');
-    await sendTelegram(`🛠️ Auto Trade is now <b>${autoTradeEnabled ? 'ENABLED' : 'DISABLED'}</b>`);
-  } else if (text.startsWith('/analyze')) {
-    await sendTelegram('🔍 Analyzing best trade opportunity...');
-    // Logic to analyze signals
-    sendTradeToUIVision('EUR/USD', '1', 'Manual');
-  } else if (text.startsWith('/status')) {
-    await sendTelegram(`📊 Auto Mode: <b>${autoTradeEnabled}</b>\nDefault: ${defaultExchange}/${defaultInterval}`);
-  } else {
-    await sendTelegram(`❓ Unknown command: <code>${text}</code>`);
+  if (message.startsWith("/stats")) {
+    const stats = getStats();
+    return sendTelegram(stats, chatId);
   }
 
   res.sendStatus(200);
 });
 
-// === TRADINGVIEW WEBHOOK ===
-app.post('/webhook', async (req, res) => {
-  try {
-    const { symbol, timeframe, source } = req.body;
-    const tf = timeframe || defaultInterval;
+// === Incoming Signal Endpoint from n8n or Hookdeck ===
+app.post("/signal", async (req, res) => {
+  loopCount++;
 
-    await sendTelegram(`📩 Signal received from ${source || 'TradingView'} for <b>${symbol}</b> on ${tf}min`);
-    if (autoTradeEnabled) {
-      await sendTradeToUIVision(symbol, tf, source || 'TradingView');
-    } else {
-      await sendTelegram(`🕹️ Auto mode OFF. Use /auto on to activate.`);
-    }
+  const signal = req.body;
 
-    res.send({ ok: true });
-  } catch (err) {
-    console.error(err);
-    await sendTelegram(`❌ Error processing signal: ${err.message}`);
-    res.sendStatus(500);
+  if (!signal || !signal.pair || !signal.direction) return res.sendStatus(200);
+
+  // Adjust based on past results
+  const confidence = adjustConfidence(signal);
+
+  const tradeData = {
+    pair: signal.pair,
+    direction: signal.direction,
+    amount: 1,
+    expiry: 3,
+    confidence,
+    auto: true,
+  };
+
+  if (confidence >= 60) {
+    await runTrade(tradeData);
+    saveTrade(tradeData, "auto");
+    sendTelegram(`⚡ Auto Trade: ${tradeData.pair} ${tradeData.direction.toUpperCase()} | Confidence: ${confidence}%`, TELEGRAM_CHAT_ID);
   }
+
+  // Run full OTC scan every 3 loops
+  if (loopCount % 3 === 0) {
+    // Here you'd loop through OTC pairs and re-analyze
+    sendTelegram("🔁 Running full OTC analysis...", TELEGRAM_CHAT_ID);
+  }
+
+  res.sendStatus(200);
 });
 
-// === STATS EXPORT PLACEHOLDER ===
-app.get('/stats', async (req, res) => {
-  res.json({
-    stats: {
-      totalTrades: 12,
-      wins: 8,
-      losses: 4,
-      winRate: '66.6%',
-    },
+// === Helpers ===
+function sendTelegram(message, chatId = TELEGRAM_CHAT_ID) {
+  return axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    chat_id: chatId,
+    text: message,
   });
-});
+}
 
-// === SERVER START ===
-const PORT = process.env.TV_WEBHOOK_PORT || 8081;
+function runTrade(tradeData) {
+  return axios.post(UI_VISION_WEBHOOK, tradeData);
+}
+
+function saveTrade(tradeData, type) {
+  const record = {
+    ...tradeData,
+    type,
+    time: new Date().toISOString(),
+    result: null,
+  };
+  tradeHistory.push(record);
+  if (tradeHistory.length > 100) tradeHistory.shift(); // Keep last 100
+  fs.writeFileSync("trades.json", JSON.stringify(tradeHistory, null, 2));
+}
+
+function loadTradeHistory() {
+  try {
+    const data = fs.readFileSync("trades.json", "utf8");
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
+
+function getStats() {
+  const last3 = tradeHistory.slice(-3).reverse();
+  const results = last3.map((t, i) => {
+    const res = t.result === "win" ? "✅" : t.result === "loss" ? "❌" : "⏳";
+    return `${i + 1}. ${t.pair} - ${res}`;
+  });
+
+  const total = tradeHistory.filter(t => t.result).length;
+  const wins = tradeHistory.filter(t => t.result === "win").length;
+  const winrate = total > 0 ? ((wins / total) * 100).toFixed(2) : "N/A";
+
+  return `📈 Last 3 Trades:\n${results.join("\n")}\n\n⚙️ Current Winrate: ${winrate}%`;
+}
+
+function adjustConfidence(signal) {
+  const similar = tradeHistory
+    .filter(t => t.pair === signal.pair && t.direction === signal.direction)
+    .slice(-3);
+
+  const recentLoss = similar.find(t => t.result === "loss");
+
+  return recentLoss ? 60 : 100;
+}
+
+// === Start Server ===
 app.listen(PORT, () => {
-  console.log(`📡 Webhook server running on port ${PORT}`);
+  console.log(`Bot running on http://localhost:${PORT}`);
 });
