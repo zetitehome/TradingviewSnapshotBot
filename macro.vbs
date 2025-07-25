@@ -1,30 +1,38 @@
 ' run_macro.vbs
-' Usage: cscript run_macro.vbs "EURUSD" "BUY" "5" "10" "75"
+Option Explicit
 
-Dim shell, fso, logFile, pair, action, expiry, amount, winrate, timestamp, cmd, returnCode
-
+Dim shell, macroPath, uiVisionPath, logPath, command, args
 Set shell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
 
-' Signal Data
-pair = WScript.Arguments(0)
-action = WScript.Arguments(1)
-expiry = WScript.Arguments(2)
-amount = WScript.Arguments(3)
-winrate = WScript.Arguments(4)
-timestamp = Now
+' === CONFIG ===
+uiVisionPath = "C:\Users\chop\AppData\Local\Programs\UIVision\UIVision.exe"
+macroPath = "auto_trade_macro"
+logPath = "C:\Users\chop\Documents\macro_log.txt"
 
-' Command to run the macro
-cmd = "cmd /c start """" ""C:\Program Files\UI.Vision RPA\UI.Vision RPA.exe"" -macro=TradeFromSignal -cmdline 1 -savelog -storage=hard -param pair=" & pair & " -param action=" & action & " -param expiry=" & expiry & " -param amount=" & amount & " -param winrate=" & winrate
-
-' Run UI.Vision macro
-returnCode = shell.Run(cmd, 1, True)
-
-' Logging
-Set logFile = fso.OpenTextFile("trade_log.txt", 8, True)
-If returnCode = 0 Then
-  logFile.WriteLine timestamp & " | SUCCESS | " & pair & " " & action & " | Expiry: " & expiry & " | $" & amount & " | Winrate: " & winrate & "%"
+' === PARSE ARGUMENTS ===
+If WScript.Arguments.Count > 0 Then
+    args = WScript.Arguments.Item(0) ' Expect JSON string or query string passed from Node
 Else
-  logFile.WriteLine timestamp & " | FAILED  | " & pair & " " & action & " | Expiry: " & expiry & " | $" & amount & " | Winrate: " & winrate & "%"
+    args = "{}"
 End If
-logFile.Close
+
+' === BUILD COMMAND ===
+command = """" & uiVisionPath & """ -macro=" & macroPath & " -param=" & Chr(34) & args & Chr(34)
+
+' === RUN UI.VISION MACRO ===
+Dim result
+On Error Resume Next
+result = shell.Run(command, 1, True)
+
+Dim fso, file
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set file = fso.OpenTextFile(logPath, 8, True)
+
+file.WriteLine Now & " | Launched: " & command
+If Err.Number = 0 Then
+    file.WriteLine Now & " | ✅ Success"
+Else
+    file.WriteLine Now & " | ❌ Failed: " & Err.Description
+End If
+
+file.Close
