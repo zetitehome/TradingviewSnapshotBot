@@ -1,19 +1,30 @@
-const db = require('./db');
-const fetch = require('node-fetch');
+const express = require('express');
+const bodyParser = require('body-parser');
+const { exec } = require('child_process');
+const app = express();
+const port = 3333;
 
-async function triggerTrade({ symbol, direction, expiry, amount }) {
-  const id = db.prepare('INSERT INTO trades (symbol, direction, expiry, amount) VALUES (?, ?, ?, ?)')
-    .run(symbol, direction, expiry, amount).lastInsertRowid;
+app.use(bodyParser.json());
 
-  // === Replace with your webhook trigger ===
-  await fetch('http://localhost:3001/trade', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol, direction, expiry, amount })
+app.post('/signal', (req, res) => {
+  const { pair, action, expiry, amount, winrate } = req.body;
+
+  if (!pair || !action || !expiry || !amount || !winrate) {
+    return res.status(400).send('Missing parameters');
+  }
+
+  const cmd = `cscript run_macro.vbs "${pair}" "${action}" "${expiry}" "${amount}" "${winrate}"`;
+
+  exec(cmd, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`❌ Error: ${error.message}`);
+      return res.status(500).send('Failed to run macro');
+    }
+    console.log(`✅ Trade triggered: ${pair} ${action} $${amount} Exp: ${expiry}min`);
+    res.send('Macro executed');
   });
+});
 
-  return id;
-}
-
-module.exports = triggerTrade;
-const pairs = require('./pairs');
+app.listen(port, () => {
+  console.log(`UI.Vision server running on port ${port}`);
+});
