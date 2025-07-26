@@ -1,151 +1,90 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const fs = require("fs");
-const axios = require("axios");
+// server.js
+const TelegramBot = require('node-telegram-bot-api');
+const fs = require('fs');
+const path = require('path');
+const schedule = require('node-schedule');
+const { analyzeMarket } = require('./utils/indicators');
+const { takeScreenshot } = require('./utils/screenshot');
 
-const app = express();
-const PORT = 3000;
+const config = require('./config.json');
+const token = config.telegramToken;
+const bot = new TelegramBot(token, { polling: true });
 
-const TELEGRAM_TOKEN = "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA";
-const TELEGRAM_CHAT_ID = "6337160812";
-const UI_VISION_WEBHOOK = "http://localhost:5000/run-macro";
+const logPath = './tradeLog.json';
+const SNAPSHOT_DIR = './snapshots';
+if (!fs.existsSync(logPath)) fs.writeFileSync(logPath, '[]');
+if (!fs.existsSync(SNAPSHOT_DIR)) fs.mkdirSync(SNAPSHOT_DIR);
 
-let loopCount = 0;
-let tradeHistory = loadTradeHistory(); // Load from file
+let lastAnalysisTime = 0;
+const MIN_INTERVAL = 180 * 1000; // 3 minutes
 
-app.use(bodyParser.json());
-
-// === Command Handlers ===
-app.post("/telegram", async (req, res) => {
-  const message = req.body.message?.text || "";
-  const chatId = req.body.message?.chat.id;
-
-  if (!chatId) return res.sendStatus(200);
-
-  if (message.startsWith("/trade")) {
-    const parts = message.split(" ");
-    if (parts.length < 5) {
-      return sendTelegram("Usage: /trade EURUSD buy 5 3", chatId);
-    }
-
-    const [_, pair, direction, amount, expiry] = parts;
-
-    const tradeData = {
-      pair,
-      direction,
-      amount,
-      expiry,
-      confidence: 100,
-      auto: false,
-    };
-
-    await runTrade(tradeData);
-    saveTrade(tradeData, "manual");
-
-    return sendTelegram(`📊 Manual Trade: ${pair} ${direction.toUpperCase()} ($${amount}, ${expiry}m)`, chatId);
-  }
-
-  if (message.startsWith("/stats")) {
-    const stats = getStats();
-    return sendTelegram(stats, chatId);
-  }
-
-  res.sendStatus(200);
-});
-
-// === Incoming Signal Endpoint from n8n or Hookdeck ===
-app.post("/signal", async (req, res) => {
-  loopCount++;
-
-  const signal = req.body;
-
-  if (!signal || !signal.pair || !signal.direction) return res.sendStatus(200);
-
-  // Adjust based on past results
-  const confidence = adjustConfidence(signal);
-
-  const tradeData = {
-    pair: signal.pair,
-    direction: signal.direction,
-    amount: 1,
-    expiry: 3,
-    confidence,
-    auto: true,
-  };
-
-  if (confidence >= 60) {
-    await runTrade(tradeData);
-    saveTrade(tradeData, "auto");
-    sendTelegram(`⚡ Auto Trade: ${tradeData.pair} ${tradeData.direction.toUpperCase()} | Confidence: ${confidence}%`, TELEGRAM_CHAT_ID);
-  }
-
-  // Run full OTC scan every 3 loops
-  if (loopCount % 3 === 0) {
-    // Here you'd loop through OTC pairs and re-analyze
-    sendTelegram("🔁 Running full OTC analysis...", TELEGRAM_CHAT_ID);
-  }
-
-  res.sendStatus(200);
-});
-
-// === Helpers ===
-function sendTelegram(message, chatId = TELEGRAM_CHAT_ID) {
-  return axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-    chat_id: chatId,
-    text: message,
-  });
-}
-
-function runTrade(tradeData) {
-  return axios.post(UI_VISION_WEBHOOK, tradeData);
-}
-
-function saveTrade(tradeData, type) {
-  const record = {
-    ...tradeData,
-    type,
-    time: new Date().toISOString(),
-    result: null,
-  };
-  tradeHistory.push(record);
-  if (tradeHistory.length > 100) tradeHistory.shift(); // Keep last 100
-  fs.writeFileSync("trades.json", JSON.stringify(tradeHistory, null, 2));
-}
-
-function loadTradeHistory() {
-  try {
-    const data = fs.readFileSync("trades.json", "utf8");
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
+// === UTIL ===
+function logTrade(entry) {
+  const logs = JSON.parse(fs.readFileSync(logPath));
+  logs.push(entry);
+  fs.writeFileSync(logPath, JSON.stringify(logs.slice(-50), null, 2));
 }
 
 function getStats() {
-  const last3 = tradeHistory.slice(-3).reverse();
-  const results = last3.map((t, i) => {
-    const res = t.result === "win" ? "✅" : t.result === "loss" ? "❌" : "⏳";
-    return `${i + 1}. ${t.pair} - ${res}`;
-  });
-
-  const total = tradeHistory.filter(t => t.result).length;
-  const wins = tradeHistory.filter(t => t.result === "win").length;
-  const winrate = total > 0 ? ((wins / total) * 100).toFixed(2) : "N/A";
-
-  return `📈 Last 3 Trades:\n${results.join("\n")}\n\n⚙️ Current Winrate: ${winrate}%`;
+  const logs = JSON.parse(fs.readFileSync(logPath));
+  const last3 = logs.slice(-3);
+  const wins = logs.filter(t => t.result === 'win').length;
+  const rate = logs.length ? ((wins / logs.length) * 100).toFixed(1) : 'N/A';
+  return { last3, winRate: rate };
 }
 
-function adjustConfidence(signal) {
-  const similar = tradeHistory
-    .filter(t => t.pair === signal.pair && t.direction === signal.direction)
-    .slice(-3);
+// === ANALYZE MARKET ===
+async function runAnalysis(chatId, manual = false) {
+  const now = Date.now();
+  if (!manual && now - lastAnalysisTime < MIN_INTERVAL) return;
+  lastAnalysisTime = now;
 
-  const recentLoss = similar.find(t => t.result === "loss");
+  const result = await analyzeMarket();
+  if (!result || !result.signal) return;
 
-  return recentLoss ? 60 : 100;
+  const fileName = `${Date.now()}.png`;
+  const filePath = path.join(SNAPSHOT_DIR, fileName);
+  await takeScreenshot(filePath, result.symbol);
+
+  const entry = {
+    time: new Date().toLocaleString(),
+    symbol: result.symbol,
+    direction: result.signal,
+    confidence: result.confidence,
+    result: 'pending',
+    screenshot: fileName
+  };
+
+  logTrade(entry);
+
+  bot.sendMessage(chatId, `📈 *${result.symbol}*\nSignal: *${result.signal.toUpperCase()}*\nConfidence: ${result.confidence}%`, { parse_mode: 'Markdown' });
+  bot.sendPhoto(chatId, filePath);
+
+  // TODO: send to UI.Vision local webhook if auto-trade is enabled
 }
 
-// === Start Server ===
-app.listen(PORT, () => {
-  console.log(`Bot running on http://localhost:${PORT}`);
+// === COMMANDS ===
+bot.onText(/\/analyze/, async (msg) => {
+  await runAnalysis(msg.chat.id, true);
 });
+
+bot.onText(/\/stats/, (msg) => {
+  const { last3, winRate } = getStats();
+  let text = `📊 *Win Rate:* ${winRate}%\nLast 3 Trades:`;
+  last3.forEach((t, i) => {
+    text += `\n${i + 1}. ${t.symbol} - ${t.direction.toUpperCase()} (${t.result})`;
+  });
+  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+
+  if (last3[0]?.screenshot) {
+    const imgPath = path.join(SNAPSHOT_DIR, last3[0].screenshot);
+    if (fs.existsSync(imgPath)) bot.sendPhoto(msg.chat.id, imgPath);
+  }
+});
+
+// === SCHEDULED JOB ===
+schedule.scheduleJob('*/3 * * * *', () => {
+  runAnalysis(config.ownerChatId);
+});
+
+console.log('🤖 Bot running...');
