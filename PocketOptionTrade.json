@@ -1,0 +1,132 @@
+{
+  "Name": "TradingViewChartSetup.json",
+  "CreationDate": "2025-7-29",
+  "Commands": [
+    {
+      "Command": "open",
+      "Target": "https://pocketoption.com/en/login/",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "pause",
+      "Target": "3000",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "type",
+      "Target": "css=input[name='email'], input[type='email']",
+      "Value": "${username}",
+      "Description": ""
+    },
+    {
+      "Command": "type",
+      "Target": "css=input[name='password'], input[type='password']",
+      "Value": "${password}",
+      "Description": ""
+    },
+    {
+      "Command": "click",
+      "Target": "css=button[type='submit'], button.btn-login",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "waitForPageToLoad",
+      "Target": "60000",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "waitForVisible",
+      "Target": "css=.trading-chart-container, .main-trading-area",
+      "Value": "30000",
+      "Description": ""
+    },
+    {
+      "Command": "click",
+      "Target": "css=.asset-select-button, .current-asset-name",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "pause",
+      "Target": "1500",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "type",
+      "Target": "css=input[placeholder='Search assets'], .asset-search-input",
+      "Value": "${symbol}",
+      "Description": ""
+    },
+    {
+      "Command": "pause",
+      "Target": "1000",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "click",
+      "Target": "css=.asset-list-item[data-symbol='${symbol}'], .asset-search-result-item:first-child",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "pause",
+      "Target": "3000",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "type",
+      "Target": "css=input[name='amount'], .trade-amount-input",
+      "Value": "${amount}",
+      "Description": ""
+    },
+    {
+      "Command": "executeScript",
+      "Target": "var expiryMinutes = ${expiry}; var selector = `[data-expiry-minutes='${expiryMinutes}']`; return selector;",
+      "Value": "expirySelector",
+      "Description": ""
+    },
+    {
+      "Command": "click",
+      "Target": "css=.expiry-dropdown-toggle, .expiry-time-selector",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "click",
+      "Target": "css=${expirySelector}, .expiry-option[data-value='${expiry}']",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "pause",
+      "Target": "1000",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "click",
+      "Target": "css=button.trade-button.${direction}, button.trade-${direction}",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "pause",
+      "Target": "2000",
+      "Value": "",
+      "Description": ""
+    },
+    {
+      "Command": "echo",
+      "Target": "Pocket Option trade executed: ${direction.toUpperCase()} ${symbol} $${amount} for ${expiry}m.",
+      "Value": "",
+      "Description": ""
+    }
+  ]
+}

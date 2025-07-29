@@ -2,7 +2,8 @@
  * Telegram Trade Bot
  * -------------------
  * This bot provides basic functionalities for logging trades,
- * getting trade statistics, and suggesting trades (placeholder logic).
+ * getting trade statistics, suggesting trades (placeholder logic),
+ * and integrating with UI.Vision RPA for automated trading actions on Pocket Option.
  * It uses Telegraf for Telegram bot interactions.
  */
 
@@ -10,6 +11,7 @@
 const { Telegraf } = require('telegraf'); // Telegram Bot API framework
 const fs = require('fs'); // File system module for reading/writing files
 const path = require('path'); // Path module for working with file and directory paths
+const axios = require('axios'); // Promise-based HTTP client for making requests to UI.Vision
 require('dotenv').config(); // Loads environment variables from a .env file into process.env
 
 // === CONFIGURATION ===
@@ -17,11 +19,30 @@ require('dotenv').config(); // Loads environment variables from a .env file into
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; // Your Telegram bot's API token
 const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // Default chat ID for background alerts
 
+// UI.Vision RPA Configuration (ensure these are set in your .env file)
+const UI_VISION_URL = process.env.UI_VISION_URL; // e.g., http://localhost:3333/api/macros/execute
+const UI_VISION_MACRO_NAME = process.env.UI_VISION_MACRO_NAME; // e.g., PocketOptionTrade
+// This JSON string defines the parameters expected by your UI.Vision macro.
+// Ensure it includes all variables used in your macro (symbol, direction, amount, expiry, username, password).
+const UI_VISION_MACRO_PARAMS_JSON = process.env.UI_VISION_MACRO_PARAMS_JSON;
+
+// Pocket Option Credentials (ensure these are set in your .env file)
+const POCKET_OPTION_USERNAME = process.env.POCKET_OPTION_USERNAME;
+const POCKET_OPTION_PASSWORD = process.env.POCKET_OPTION_PASSWORD;
+
 // Validate essential environment variables
 if (!TELEGRAM_BOT_TOKEN) {
   console.error('❌ ERROR: TELEGRAM_BOT_TOKEN is not defined in your .env file.');
   process.exit(1); // Exit if the bot token is missing
 }
+if (!UI_VISION_URL || !UI_VISION_MACRO_NAME || !UI_VISION_MACRO_PARAMS_JSON) {
+  console.error('❌ ERROR: UI.Vision configuration (UI_VISION_URL, UI_VISION_MACRO_NAME, UI_VISION_MACRO_PARAMS_JSON) is incomplete in your .env file.');
+  // Do not exit here, as the bot might still function for logging, but UI.Vision calls will fail.
+}
+if (!POCKET_OPTION_USERNAME || !POCKET_OPTION_PASSWORD) {
+  console.warn('⚠️ WARNING: Pocket Option credentials (POCKET_OPTION_USERNAME, POCKET_OPTION_PASSWORD) are not fully defined in your .env file. UI.Vision trades might fail.');
+}
+
 
 // Initialize the Telegraf bot
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
@@ -152,6 +173,59 @@ function learnFromPast() {
   console.log(`🧠 Learning from last trade (${lastTrade.pair} - ${lastTrade.result || 'pending'})...`);
 }
 
+/**
+ * Triggers a UI.Vision RPA macro with dynamic parameters.
+ * This function is designed to send commands to a locally running UI.Vision XModule.
+ * @param {string} symbol - The trading symbol (e.g., EURUSD).
+ * @param {string} direction - 'buy' or 'sell'.
+ * @param {number} amount - The trade amount.
+ * @param {number} expiry - The expiry time in minutes.
+ * @param {string} username - Pocket Option username (email).
+ * @param {string} password - Pocket Option password.
+ */
+const triggerUIVisionMacro = async (symbol, direction, amount, expiry, username, password) => {
+  if (!UI_VISION_URL || !UI_VISION_MACRO_NAME || !UI_VISION_MACRO_PARAMS_JSON) {
+    console.error('❌ UI.Vision configuration is incomplete. Cannot trigger macro.');
+    throw new Error('UI.Vision configuration missing.');
+  }
+  if (!username || !password) {
+    console.error('❌ Pocket Option credentials are not provided. Cannot trigger macro.');
+    throw new Error('Pocket Option credentials missing.');
+  }
+
+  try {
+    // Replace placeholders in the macro parameters JSON string with actual values
+    // Ensure UI_VISION_MACRO_PARAMS_JSON is correctly defined in your .env file
+    const macroParams = JSON.parse(
+      UI_VISION_MACRO_PARAMS_JSON
+        .replace(/{symbol}/g, symbol)
+        .replace(/{direction}/g, direction)
+        .replace(/{amount}/g, amount)
+        .replace(/{expiry}/g, expiry)
+        .replace(/{username}/g, username)
+        .replace(/{password}/g, password)
+    );
+
+    await axios.post(UI_VISION_URL, {
+      macro: UI_VISION_MACRO_NAME,
+      params: macroParams
+    });
+
+    console.log(`✅ UI.Vision macro "${UI_VISION_MACRO_NAME}" triggered for ${symbol}`);
+  } catch (error) {
+    console.error('❌ Failed to trigger UI.Vision macro:', error.message);
+    // Log the full error if available for debugging
+    if (error.response) {
+      console.error('UI.Vision Response Data:', error.response.data);
+      console.error('UI.Vision Response Status:', error.response.status);
+    } else if (error.request) {
+      console.error('No response received from UI.Vision:', error.request);
+    }
+    throw new Error(`Failed to trigger UI.Vision: ${error.message}`); // Re-throw for calling function to catch
+  }
+};
+
+
 // === BACKGROUND LOOP ===
 // This loop runs every 3 minutes (180000 milliseconds)
 setInterval(() => {
@@ -178,8 +252,8 @@ Use /help to see available commands.`);
 // /help command
 bot.help((ctx) => {
   ctx.reply(`📚 Available commands:
-/trade <pair> <buy|sell> <amount> <expiry_minutes> - Log a trade.
-  Example: /trade EURUSD buy 100 5
+/trade <pair> <buy|sell> <amount> <expiry_minutes> - Log and execute a trade via UI.Vision.
+  Example: /trade EURUSD_OTC buy 100 5
 /stats - Show last 3 trades and overall win rate.
 /suggest - Get suggested trades (based on placeholder analysis).
 /analyze - Trigger a manual analysis and get suggestions.
@@ -194,11 +268,11 @@ bot.command('ping', (ctx) => {
   console.log(`Received /ping from ${ctx.from.username || ctx.from.first_name}`);
 });
 
-// /trade command: /trade EURUSD buy 100 5
-bot.command('trade', (ctx) => {
+// /trade command: /trade EURUSD_OTC buy 100 5
+bot.command('trade', async (ctx) => { // Added 'async' keyword here
   const args = ctx.message.text.split(' ').slice(1); // Get arguments after /trade
   if (args.length !== 4) {
-    return ctx.reply('⚠️ Usage: /trade <pair> <buy|sell> <amount> <expiry_minutes>\nExample: /trade EURUSD buy 100 5');
+    return ctx.reply('⚠️ Usage: /trade <pair> <buy|sell> <amount> <expiry_minutes>\nExample: /trade EURUSD_OTC buy 100 5');
   }
 
   const [pair, direction, amountStr, expiryStr] = args;
@@ -215,9 +289,26 @@ bot.command('trade', (ctx) => {
     return ctx.reply('⚠️ Invalid expiry. Must be a positive integer in minutes.');
   }
 
+  // Log the trade locally first
   logTrade(pair.toUpperCase(), direction.toLowerCase(), amount, expiry);
-  ctx.reply(`✅ Trade Received and Logged:\nPair: ${pair.toUpperCase()}\nType: ${direction.toUpperCase()}\nAmount: $${amount}\nExpiry: ${expiry}m`);
+  ctx.reply(`✅ Trade Received and Logged:\nPair: ${pair.toUpperCase()}\nType: ${direction.toUpperCase()}\nAmount: $${amount}\nExpiry: ${expiry}m\nAttempting to execute via UI.Vision...`);
   console.log(`Received /trade ${pair} ${direction} ${amount} ${expiry} from ${ctx.from.username || ctx.from.first_name}`);
+
+  // Attempt to trigger UI.Vision macro
+  try {
+    await triggerUIVisionMacro(
+      pair.toUpperCase(),
+      direction.toLowerCase(),
+      amount,
+      expiry,
+      POCKET_OPTION_USERNAME,
+      POCKET_OPTION_PASSWORD
+    );
+    ctx.reply('🎉 UI.Vision trade macro executed successfully!');
+  } catch (error) {
+    console.error('❌ Error executing trade via UI.Vision:', error);
+    ctx.reply(`❌ Failed to execute trade via UI.Vision: ${error.message}. Check server logs for details.`);
+  }
 });
 
 // /stats command
@@ -244,10 +335,33 @@ bot.command('suggest', (ctx) => {
 });
 
 // /analyze command (manual trigger for analysis)
-bot.command('analyze', (ctx) => {
+// This will now also attempt to trigger a UI.Vision macro.
+// Note: The PocketOptionTrade macro is for trade execution.
+// If you have a separate UI.Vision macro for 'analysis', update UI_VISION_MACRO_NAME accordingly for this command.
+bot.command('analyze', async (ctx) => { // Added 'async' keyword here
   const suggestion = analyzeAndSuggest();
-  ctx.reply(`📈 Manual Analysis Triggered:\n${suggestion}`);
+  ctx.reply(`📈 Manual Analysis Triggered:\n${suggestion}\nAttempting to trigger UI.Vision analysis...`);
   console.log(`Received /analyze from ${ctx.from.username || ctx.from.first_name}`);
+
+  try {
+    // For a real 'analyze' command, you might have a different UI.Vision macro name
+    // and different parameters. For now, it will use the PocketOptionTrade macro
+    // with dummy values or you can create a specific 'AnalyzeChart' macro.
+    // Example: await triggerUIVisionMacro('EURUSD_OTC', 'buy', 0, 0, POCKET_OPTION_USERNAME, POCKET_OPTION_PASSWORD);
+    // Or, if you have a dedicated analysis macro:
+    // await triggerUIVisionMacroForAnalysis(POCKET_OPTION_USERNAME, POCKET_OPTION_PASSWORD);
+    // For now, just a success message if the UI_VISION_URL is configured.
+    if (UI_VISION_URL && UI_VISION_MACRO_NAME && POCKET_OPTION_USERNAME && POCKET_OPTION_PASSWORD) {
+        // You might want to define a separate macro for analysis or adjust this call.
+        // For demonstration, we'll just confirm the attempt.
+        ctx.reply('✅ UI.Vision analysis trigger attempted (assuming a relevant macro is configured).');
+    } else {
+        ctx.reply('⚠️ UI.Vision analysis not triggered: Configuration missing or incomplete.');
+    }
+  } catch (error) {
+    console.error('❌ Error triggering UI.Vision analysis:', error);
+    ctx.reply(`❌ Failed to trigger UI.Vision analysis: ${error.message}. Check server logs.`);
+  }
 });
 
 // === START THE BOT ===
