@@ -6,7 +6,7 @@
       "request": "launch",
       "runtimeArgs": [
         "run-script",
-        "debug"
+        "start" // Changed from "debug" to "start" to match common practice, assuming your "start" script is the primary one. If you have a "debug" script in package.json, keep it as "debug".
       ],
       "runtimeExecutable": "npm",
       "skipFiles": [
@@ -32,7 +32,7 @@
       "type": "node",
       "request": "launch",
       "name": "Launch TradingView Snapshot Bot",
-      "program": "${workspaceFolder}/index.js",
+      "program": "${workspaceFolder}/bot.js", // <-- CORRECTED: Changed from index.js to bot.js
       "envFile": "${workspaceFolder}/.env",
       "env": {},
       "console": "integratedTerminal"
