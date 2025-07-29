@@ -1,90 +1,87 @@
-// server.js
-const TelegramBot = require('node-telegram-bot-api');
-const fs = require('fs');
-const path = require('path');
-const schedule = require('node-schedule');
-const { analyzeMarket } = require('./utils/indicators');
-const { takeScreenshot } = require('./utils/screenshot');
+require('dotenv').config();
+const express = require('express');
+const bodyParser = require('body-parser');
+const axios = require('axios');
+const app = express();
 
-const config = require('./config.json');
-const token = config.telegramToken;
-const bot = new TelegramBot(token, { polling: true });
+const PORT = process.env.PORT || 3000;
+const TV_WEBHOOK_PORT = process.env.TV_WEBHOOK_PORT || 8081;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const UI_VISION_URL = process.env.UI_VISION_URL;
+const UI_VISION_MACRO_NAME = process.env.UI_VISION_MACRO_NAME;
+const UI_VISION_MACRO_PARAMS_JSON = process.env.UI_VISION_MACRO_PARAMS_JSON;
 
-const logPath = './tradeLog.json';
-const SNAPSHOT_DIR = './snapshots';
-if (!fs.existsSync(logPath)) fs.writeFileSync(logPath, '[]');
-if (!fs.existsSync(SNAPSHOT_DIR)) fs.mkdirSync(SNAPSHOT_DIR);
+app.use(bodyParser.json());
 
-let lastAnalysisTime = 0;
-const MIN_INTERVAL = 180 * 1000; // 3 minutes
+const triggerUIVisionMacro = async (symbol, interval, exchange, theme) => {
+  try {
+    const macroParams = JSON.parse(UI_VISION_MACRO_PARAMS_JSON
+      .replace('{symbol}', symbol)
+      .replace('{interval}', interval)
+      .replace('{exchange}', exchange)
+      .replace('{theme}', theme));
 
-// === UTIL ===
-function logTrade(entry) {
-  const logs = JSON.parse(fs.readFileSync(logPath));
-  logs.push(entry);
-  fs.writeFileSync(logPath, JSON.stringify(logs.slice(-50), null, 2));
-}
+    await axios.post(UI_VISION_URL, {
+      macro: UI_VISION_MACRO_NAME,
+      params: macroParams
+    });
 
-function getStats() {
-  const logs = JSON.parse(fs.readFileSync(logPath));
-  const last3 = logs.slice(-3);
-  const wins = logs.filter(t => t.result === 'win').length;
-  const rate = logs.length ? ((wins / logs.length) * 100).toFixed(1) : 'N/A';
-  return { last3, winRate: rate };
-}
-
-// === ANALYZE MARKET ===
-async function runAnalysis(chatId, manual = false) {
-  const now = Date.now();
-  if (!manual && now - lastAnalysisTime < MIN_INTERVAL) return;
-  lastAnalysisTime = now;
-
-  const result = await analyzeMarket();
-  if (!result || !result.signal) return;
-
-  const fileName = `${Date.now()}.png`;
-  const filePath = path.join(SNAPSHOT_DIR, fileName);
-  await takeScreenshot(filePath, result.symbol);
-
-  const entry = {
-    time: new Date().toLocaleString(),
-    symbol: result.symbol,
-    direction: result.signal,
-    confidence: result.confidence,
-    result: 'pending',
-    screenshot: fileName
-  };
-
-  logTrade(entry);
-
-  bot.sendMessage(chatId, `📈 *${result.symbol}*\nSignal: *${result.signal.toUpperCase()}*\nConfidence: ${result.confidence}%`, { parse_mode: 'Markdown' });
-  bot.sendPhoto(chatId, filePath);
-
-  // TODO: send to UI.Vision local webhook if auto-trade is enabled
-}
-
-// === COMMANDS ===
-bot.onText(/\/analyze/, async (msg) => {
-  await runAnalysis(msg.chat.id, true);
-});
-
-bot.onText(/\/stats/, (msg) => {
-  const { last3, winRate } = getStats();
-  let text = `📊 *Win Rate:* ${winRate}%\nLast 3 Trades:`;
-  last3.forEach((t, i) => {
-    text += `\n${i + 1}. ${t.symbol} - ${t.direction.toUpperCase()} (${t.result})`;
-  });
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
-
-  if (last3[0]?.screenshot) {
-    const imgPath = path.join(SNAPSHOT_DIR, last3[0].screenshot);
-    if (fs.existsSync(imgPath)) bot.sendPhoto(msg.chat.id, imgPath);
+    console.log(`✅ UI.Vision macro triggered for ${symbol}`);
+  } catch (error) {
+    console.error('❌ Failed to trigger UI.Vision:', error.message);
   }
+};
+
+const sendTelegramAlert = async (message) => {
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: message,
+      parse_mode: 'Markdown'
+    });
+    console.log(`📨 Telegram alert sent`);
+  } catch (error) {
+    console.error('❌ Telegram alert error:', error.message);
+  }
+};
+
+const tvApp = express();
+tvApp.use(bodyParser.json());
+
+tvApp.post('/webhook', async (req, res) => {
+  const data = req.body;
+
+  const symbol = data.symbol || 'EURUSD';
+  const interval = data.interval || process.env.DEFAULT_INTERVAL || '1';
+  const exchange = data.exchange || process.env.DEFAULT_EXCHANGE || 'FX';
+  const theme = data.theme || process.env.DEFAULT_THEME || 'dark';
+  const signal = data.signal || 'BUY';
+
+  const msg = `📈 *Signal Received:*\n• Pair: *${symbol}*\n• Interval: *${interval}m*\n• Signal: *${signal}*\n• Exchange: *${exchange}*`;
+
+  await sendTelegramAlert(msg);
+  await triggerUIVisionMacro(symbol, interval, exchange, theme);
+
+  res.status(200).json({ status: 'ok', message: 'Signal processed.' });
 });
 
-// === SCHEDULED JOB ===
-schedule.scheduleJob('*/3 * * * *', () => {
-  runAnalysis(config.ownerChatId);
+app.get('/', (req, res) => {
+  res.send('📡 PocketSignal Bot is running!');
 });
 
-console.log('🤖 Bot running...');
+app.listen(PORT, () => {
+  console.log(`🤖 Telegram Bot Server running on http://localhost:${PORT}`);
+});
+
+tvApp.listen(TV_WEBHOOK_PORT, () => {
+  console.log(`📩 TradingView Webhook Server running on http://localhost:${TV_WEBHOOK_PORT}/webhook`);
+});
+(async () => {
+  try {
+    await startBrowser();
+    console.log('Browser started successfully.');
+  } catch (err) {
+    console.error('Failed to start browser:', err);
+  }
+})();
