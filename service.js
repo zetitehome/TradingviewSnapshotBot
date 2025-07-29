@@ -21,8 +21,8 @@ const https = require('https');
 
 // === CONFIG ===
 const PORT = process.env.PORT || 10000;
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8009536179:AAGb8atyBIotWcITzx4cDhc_xXXH-9cA';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '6337160812';
 const BASE_URL = 'https://www.tradingview.com/chart/?symbol=';
 
 // Exchanges mapping for user-friendly names
