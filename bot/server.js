@@ -11,7 +11,6 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const UI_VISION_URL = process.env.UI_VISION_URL;
 const UI_VISION_MACRO_NAME = process.env.UI_VISION_MACRO_NAME;
-const UI_VISION_MACRO_PARAMS_JSON = process.env.UI_VISION_MACRO_PARAMS_JSON;
 
 app.use(bodyParser.json());
 
