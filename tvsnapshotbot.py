@@ -20,6 +20,9 @@ default_properties = DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
 bot = Bot(token=API_TOKEN, default=default_properties)
 dp = Dispatcher()
 
+
+
+
 # === HTML LOG FILE SETUP ===
 HTML_LOG_FILE = "trade_logs.html"
 if not os.path.exists(HTML_LOG_FILE):

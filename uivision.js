@@ -13,8 +13,8 @@ app.post('/signal', (req, res) => {
     return res.status(400).send('Missing parameters');
   }
 
-  const cmd = `cscript run_macro.vbs "${pair}" "${action}" "${expiry}" "${amount}" "${winrate}"`;
-
+  const cmd = `google-chrome "file:///home/YOUR_USER/UIVISION/macros/autotrade.html?pair=${pair}&action=${action}&expiry=${expiry}&amount=${amount}&winrate=${winrate}"`;
+  
   exec(cmd, (error, stdout, stderr) => {
     if (error) {
       console.error(`❌ Error: ${error.message}`);

@@ -4,13 +4,25 @@
   "description": "Telegram bot for TradingView alerts with screenshot support",
   "main": "index.js",
   "scripts": {
-  "start": "node index.js",
-  "test": "echo \"Error: no test specified\" && exit 1"
-},
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "dependencies": {
     "axios": "^1.6.8",
     "body-parser": "^1.20.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2"
-  }
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zetitehome/TradingviewSnapshotBot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/zetitehome/TradingviewSnapshotBot/issues"
+  },
+  "homepage": "https://github.com/zetitehome/TradingviewSnapshotBot#readme"
 }
