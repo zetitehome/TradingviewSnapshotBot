@@ -11,8 +11,8 @@ const axios = require('axios'); // Promise-based HTTP client for making requests
 
 // === CONFIGURATION ===
 // Retrieve sensitive information and configuration from environment variables
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; // Your Telegram bot's API token
-const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // Default chat ID for background alerts (if used)
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; "8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA" 
+const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; "6637160812"
 
 // UI.Vision RPA Configuration
 const UI_VISION_URL = process.env.UI_VISION_URL;
