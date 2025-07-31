@@ -2,9 +2,9 @@
   "name": "tradingviewsnapshotbot",
   "version": "1.0.0",
   "description": "Telegram bot for TradingView alerts with screenshot support",
-  "main": "src/bot.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node src/bot.js",
+    "start": "TELEGRAM_BOT_TOKEN='8009536179:AAGb8atyBIotWcITtzx4cDuchc_xXXH-9cA' TELEGRAM_CHAT_ID='6337160812' UI_VISION_URL='http://localhost:3333/api/macros/execute' UI_VISION_MACRO_NAME='PocketOptionTrade' POCKET_OPTION_USERNAME='gwappo94@yahoo.com' POCKET_OPTION_PASSWORD='Shanuah2020$' node src/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
