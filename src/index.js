@@ -1,19 +1,19 @@
 /**
  * Telegram Bot for Pocket Option Trade Automation
  * -----------------------------------------------
- * This bot integrates with UI.Vision RPA to automate actions on Pocket Option.
+ * This bot integrates with UI.Vision RPA (via its command-line interface) to automate actions.
  * It retrieves all configuration directly from environment variables.
  */
 
 // === MODULE IMPORTS ===
 const { Telegraf } = require('telegraf');
-const axios = require('axios');
+const { exec } = require('child_process'); // Import exec for running shell commands
 
 // === CONFIGURATION ===
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const DEFAULT_TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const UI_VISION_URL = process.env.UI_VISION_URL;
-const UI_VISION_MACRO_NAME = process.env.UI_VISION_MACRO_NAME;
+const UI_VISION_CLI_PATH = process.env.UI_VISION_CLI_PATH || 'kantu-cli'; // Assumes kantu-cli is in your PATH
+const UI_VISION_MACRO_NAME = process.env.UI_VISION_MACRO_NAME || 'TradeMacro';
 const POCKET_OPTION_USERNAME = process.env.POCKET_OPTION_USERNAME;
 const POCKET_OPTION_PASSWORD = process.env.POCKET_OPTION_PASSWORD;
 
@@ -21,8 +21,8 @@ if (!TELEGRAM_BOT_TOKEN) {
   console.error('❌ ERROR: TELEGRAM_BOT_TOKEN is not defined in your environment.');
   process.exit(1);
 }
-if (!UI_VISION_URL || !UI_VISION_MACRO_NAME) {
-  console.warn('⚠️ WARNING: UI.Vision configuration is incomplete. UI.Vision calls might fail.');
+if (!UI_VISION_CLI_PATH || !UI_VISION_MACRO_NAME) {
+  console.warn('⚠️ WARNING: UI.Vision CLI configuration is incomplete. UI.Vision calls might fail.');
 }
 if (!POCKET_OPTION_USERNAME || !POCKET_OPTION_PASSWORD) {
   console.warn('⚠️ WARNING: Pocket Option credentials are not fully defined. UI.Vision trades might fail.');
@@ -32,35 +32,43 @@ const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
 // === UTILITY FUNCTIONS ===
 const triggerUIVisionMacro = async (macroToRun, params) => {
-  if (!UI_VISION_URL) {
-    console.error('❌ UI.Vision URL is not configured. Cannot trigger macro.');
-    throw new Error('UI.Vision URL missing.');
+  if (!UI_VISION_CLI_PATH) {
+    console.error('❌ UI.Vision CLI path is not configured. Cannot trigger macro.');
+    throw new Error('UI.Vision CLI path missing.');
   }
 
-  try {
-    const payload = {
-      macro: macroToRun,
-      params: params
-    };
+  // Construct the command-line string
+  let command = `${UI_VISION_CLI_PATH} -macro "${macroToRun}"`;
 
-    await axios.post(UI_VISION_URL, payload);
-    console.log(`✅ UI.Vision macro "${macroToRun}" triggered with params:`, params);
-  } catch (error) {
-    console.error(`❌ Failed to trigger UI.Vision macro "${macroToRun}":`, error.message);
-    if (error.response) {
-      console.error('UI.Vision Response Data:', error.response.data);
-      console.error('UI.Vision Response Status:', error.response.status);
-    } else if (error.request) {
-      console.error('No response received from UI.Vision:', error.request);
-    }
-    throw new Error(`Failed to trigger UI.Vision: ${error.message}`);
+  // Add parameters as -var arguments
+  for (const [key, value] of Object.entries(params)) {
+    command += ` -var ${key} "${value}"`;
   }
+
+  return new Promise((resolve, reject) => {
+    console.log(`🤖 Executing UI.Vision command: ${command}`);
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`❌ Failed to execute UI.Vision macro "${macroToRun}":`);
+        console.error('Error:', error);
+        console.error('Stderr:', stderr);
+        return reject(new Error(`Failed to execute UI.Vision: ${error.message}`));
+      }
+      if (stderr) {
+        console.warn(`⚠️ UI.Vision macro "${macroToRun}" completed with warnings/errors:`);
+        console.warn('Stderr:', stderr);
+      }
+      console.log(`✅ UI.Vision macro "${macroToRun}" executed successfully.`);
+      console.log('Stdout:', stdout);
+      resolve(stdout);
+    });
+  });
 };
 
 
 // === Telegram Commands ===
 bot.start((ctx) => {
-  ctx.reply(`�� Welcome, ${ctx.from.first_name}! I'm your Pocket Option trade bot.`);
+  ctx.reply(`🎉 Welcome, ${ctx.from.first_name}! I'm your Pocket Option trade bot. Use /help to see my commands.`);
 });
 
 bot.command('ping', (ctx) => {
@@ -70,28 +78,28 @@ bot.command('ping', (ctx) => {
 bot.command('help', (ctx) => {
   ctx.reply(`📖 Available commands:
 /ping - Test if bot is online.
-/signal - Show a sample signal (placeholder).
-/analyze - Trigger UI.Vision for chart analysis (placeholder).
-/auto - Enable auto-trading mode (placeholder).
-/trade <pair> <buy|sell> <amount> <expiry_minutes> - Execute a trade via UI.Vision.
+/signal - Show a sample signal.
+/analyze - Trigger UI.Vision for chart analysis.
+/auto - Enable auto-trading mode.
+/trade <pair> <buy|sell> <amount> <expiry_minutes> - Execute a trade.
   Example: /trade EURUSD_OTC buy 100 5`);
 });
 
 bot.command('signal', (ctx) => {
+  // This is a placeholder. You can integrate your signal generation logic here.
   ctx.reply('📈 New signal: BUY EUR/USD in 1 min (Winrate: 74%)');
 });
 
 bot.command('analyze', async (ctx) => {
   ctx.reply('🔍 Analyzing chart, please wait...');
   try {
-    const analysisMacroName = 'AnalyzeChart' || UI_VISION_MACRO_NAME;
+    const analysisMacroName = 'AnalyzeChart';
     const analysisParams = {
       username: POCKET_OPTION_USERNAME,
       password: POCKET_OPTION_PASSWORD,
     };
-
     await triggerUIVisionMacro(analysisMacroName, analysisParams);
-    ctx.reply('✅ Analysis started via UI.Vision (assuming macro is configured).');
+    ctx.reply('✅ Analysis macro executed successfully via UI.Vision!');
   } catch (err) {
     console.error('Error in /analyze command:', err);
     ctx.reply('❌ Failed to start analysis via UI.Vision. Check server logs.');
@@ -101,14 +109,13 @@ bot.command('analyze', async (ctx) => {
 bot.command('auto', async (ctx) => {
   ctx.reply('🤖 Auto-trading enabled. Watching for signals...');
   try {
-    const autoTradeMacroName = 'StartAutoTrade' || UI_VISION_MACRO_NAME;
+    const autoTradeMacroName = 'StartAutoTrade';
     const autoTradeParams = {
       username: POCKET_OPTION_USERNAME,
       password: POCKET_OPTION_PASSWORD,
     };
-
     await triggerUIVisionMacro(autoTradeMacroName, autoTradeParams);
-    ctx.reply('✅ Auto mode activated via UI.Vision (assuming macro is configured).');
+    ctx.reply('✅ Auto mode activated via UI.Vision!');
   } catch (err) {
     console.error('Error in /auto command:', err);
     ctx.reply('❌ Error enabling auto mode via UI.Vision. Check server logs.');
@@ -154,6 +161,7 @@ bot.command('trade', async (ctx) => {
   }
 });
 
+// The bot.on('text') section is left as-is, but it will now use the new triggerUIVisionMacro function
 bot.on('text', async (ctx) => {
   const message = ctx.message.text.toLowerCase();
   if (message.includes('trade')) {
